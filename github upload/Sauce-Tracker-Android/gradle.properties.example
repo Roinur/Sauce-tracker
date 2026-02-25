@@ -1,0 +1,5 @@
+# Example signing values (do not commit real secrets)
+# SAUCE_RELEASE_STORE_FILE=path/to/your/release.keystore
+# SAUCE_RELEASE_STORE_PASSWORD=your_store_password
+# SAUCE_RELEASE_KEY_ALIAS=your_key_alias
+# SAUCE_RELEASE_KEY_PASSWORD=your_key_password

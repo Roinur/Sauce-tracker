@@ -1,0 +1,164 @@
+### Sauce Tracker Feature List 
+
+  - Gallery fetch by code: Add/update entries from plain codes (e.g. 177013) and hash-codes (e.g. #177013).
+  - Gallery fetch by link: Accept full gallery links (nhentai.net/g/{code}/).
+  - Creator fetch by name: Accept artist/group names directly and resolve them.
+  - Creator fetch by link: Accept nhentai.net/artist/{name}/ and nhentai.net/group/{name}/.
+  - Smart input parsing: Auto-detect whether input is code, gallery link, creator name, or creator link.
+  - Single add/update: One-click add/update from the main input bar.
+  - Batch add/update: Import .txt with many items at once.
+  - Ambiguous two-word prompt: When two words appear together, asks whether to combine as one creator or split entries.
+  - Short-code safety prompt: Warns when detected numbers are likely invalid (too short).
+  - Split-number safety prompt: Detects split digit patterns and asks combine/skip.
+  - Duplicate prevention: Skips already-known entries and creators/groups.
+  - Refetch selected entry: Refresh metadata for one selected entry.
+  - Delete selected entry: Remove selected entry directly from its expanded card.
+  - Pin entries: Pin/unpin entries so pinned items stay at the top.
+  - Rating system (0-5): Per-entry star rating with direct star tap behavior.
+  - Rating reset: Reset rating back to 0 quickly.
+  - Code quick-copy: Tap code in selected entry to copy to clipboard.
+  - Inline selected card: Expanded selected entry appears directly under the tapped row.
+  - Tap-to-collapse selected: Tapping selected row again collapses it.
+  - Thumbnail preview (row): Small thumbnail in compact row layout.
+  - Thumbnail preview (expanded): Larger thumbnail in selected entry card.
+  - Tap-to-zoom image: Tap expanded image to open larger rounded viewer.
+  - Tap image to close: Tap full image again to close (no extra close button).
+  - Tags with counts: Tag list shows per-tag usage counts.
+  - Multi-tag filtering (AND): Selecting multiple tags narrows entries to matches containing all selected tags.
+  - Filter reset: Quick reset for active tag filters.
+  - Tag search: Search inside the tag list without dropping selected tag filters.
+  - Universal search: One "Search everything" bar across entries, tags, and creators/groups.
+  - Field-aware search tokens: Supports targeted queries like artist:, group:, tag:, title:, code:, pages:, upload:,
+    fetched:, added at:.
+  - Date range search: Added at supports date ranges.
+  - Search result counters: "Showing" counters for active search/filter states.
+  - Tag sorting: Sort tag list by name/type/count, asc/desc.
+  - Creator sorting: Sort artist/group list by name/type/count, asc/desc.
+  - Entry sorting: Sort entries by title/pages/upload/added/rating.
+  - Single active sort rule: Only the latest chosen sort is active.
+  - Sort direction colors: Direction-coded sort chips (descending vs ascending colors).
+  - Collapsible sections: Entries, Tags, and Artists/Groups sections can each collapse/expand.
+  - Creator cards: Artist/group cards expand to show linked entries.
+  - Creator link from entry: Tapping artist/group name in selected entry jumps to that creator section and opens it.
+  - Cross-filtered creators: Tag/search filters also affect which creators and creator entries are shown.
+  - Import full snapshot: Import full metadata backup from text format.
+  - Export full snapshot: Export complete saved metadata (entries, ratings, tags, creators/groups, links).
+  - Offline restore: Imported snapshots restore data without refetching website metadata.
+  - Export signature header: Export files include a recognizable Sauce export header.
+  - Procedural backup: Auto-updating backup file support.
+  - Manual backup now: Run backup instantly from settings.
+  - Backup folder picker: Choose backup destination folder via Android file picker.
+  - Clear-all safety flow: Clear-all asks whether to export first, then warns before destructive clear.
+  - Clear-all scope: Clears both entries and creators/groups.
+  - Material You theming: Dynamic theme behavior with system colors where available.
+  - Theme mode cycling: Light / Dark / Auto toggle icon in top bar.
+  - Settings panel: Centralized controls for import/export/backup/clear and options.
+  - On-screen stats: Settings shows totals for entries/artists/groups.
+  - Back gesture handling (app): Back gesture works through app state transitions, not just immediate exit.
+  - Back gesture handling (browser): Back works inside in-app browsing flow.
+  - In-app browser launch: Open selected entry directly in internal browser.
+  - Input preview browser launch: Use current input (code/link/creator) to preview in browser without adding.
+  - Home browser shortcut: Quick open to nhentai.net from main input area.
+  - Reader direct-open path: Selected-entry open uses /g/{code}/1/ for direct reader entry.
+  - Compact reader mode: Reader-focused layout tuning and crop behavior.
+  - Popup/new-window suppression: In-app browser denies popup-window behavior.
+  - Ad/tracker hardening: Gecko content-blocking configuration with strict anti-tracking setup.
+  - First-launch browser warmup: Browser performs first-use warmup before showing content.
+  - Browser readiness gate: "Preparing browser..." overlay prevents early first-load race conditions.
+
+### Sauce Tracker 1.1 - New Features--------------------------------------------------------------------------------------------------------------------------------------
+
+  - Incognito privacy mode: Double-tap the Sauce Tracker title to toggle private mode.
+  - Incognito visual theme: Dedicated incognito palette and icon, independent from wallpaper accent colors.
+  - Privacy masking layer: Sensitive content (titles, codes, tags, creator names, thumbnails, URLs, metadata) is obfuscated with rounded masks.
+  - Incognito safety controls: Open-in-browser and copy/jump actions from sensitive fields are blocked while privacy mode is enabled.
+  - Accent color picker: Press-and-hold the theme toggle to open a Material You-style color picker strip.
+  - Accent presets: Auto/wallpaper plus fixed red, orange, amber, green, teal, blue, indigo, and pink accent modes.
+  - App lock system: Optional lock on app open with local PIN and biometric unlock support.
+  - PIN workflow upgrades: Up to 20-digit PIN, keyboard auto-focus on lock screen, Enter/Done to unlock.
+  - Lock grace period: App can remain unlocked briefly after background/close (30-second grace window).
+  - Search-everything expansion: Unified search now targets entries, tags, and artists/groups together.
+  - Advanced search tokens: Fielded queries such as code:, title:, pages:, uploaded:, fetched:, added at:, artist:, group:, tag:, language:, category:, parody:, character:, type:, and rating:.
+  - Date-range queries: Added-at filtering supports range-style date search.
+  - Live match counters: Search and tag-filter fields show dynamic "Showing: N" feedback while typing/filtering.
+  - Browser query builder: Selected tags plus search terms can be combined and launched directly in-browser as one nhentai search query.
+  - Search reset ergonomics: Dedicated reset action for the universal search field.
+  - Read-state tracking: Entries now support Read/Unread status with color-coded state display.
+  - Read filtering: Toggle between Show All, Show Read, and Show Unread in the entries panel.
+  - Browser-exit rating flow: On exit from selected-entry browser view, prompt to rate/save or skip; saving marks as read.
+  - Stats extension: Settings totals include read count in addition to entries/artists/groups.
+  - Creator quick actions: Long-press artist/group name in selected entry to copy to clipboard.
+  - Clipboard quick tools: Gallery input now includes direct paste action.
+  - Browser ad resilience upgrades: Stronger first-load warmup, repeated guard injection, popup suppression, click interception, and DOM mutation cleanup.
+  - Signed 1.1 release: Built as Sauce-Tracker-1.1-release.apk (versionCode 4, versionName 1.1).
+
+
+
+
+### Sauce Tracker 1.2 - New Features--------------------------------------------------------------------------------------------------------------------------------------
+
+  - Browser architecture upgrade: Replaced the old in-app browser flow with a metadata-driven Sauce Browser UI tailored to mobile.
+  - Browser home feed split: Clear separation between "Popular now" and "Recently added" sections.
+  - Search sort controls in browser: Added `Recent`, `Today`, `Week`, and `All time` sorting for search results.
+  - Creator sort controls in browser: Added the same `Recent/Today/Week/All time` modes for artist/group pages.
+  - Browser back-stack navigation: Back gesture/button now walks true browser states (entry, creator, search, home) instead of prematurely exiting.
+  - Browser detail redesign: Entry metadata in the browser now uses Material-style grouped chips for cleaner scanning.
+  - Browser tag popularity labels: Tag chips show popularity values with compact formatting (e.g., `19k`).
+  - Browser code quick-copy: Tapping the code in browser detail copies it to clipboard.
+  - Browser creator deep-linking: Tapping artist/group in browser detail opens that creator page in the same browser flow.
+  - Browser comments support: Gallery comments are fetched and rendered inside browser detail view.
+  - Comment author parsing fix: Cleaned malformed author strings so usernames display correctly.
+  - Slideshow reader mode: Opening a gallery from browser detail launches a direct image slideshow view.
+  - Page-target opening: Tapping a specific page thumbnail opens slideshow on that exact page instead of always page 1.
+  - Slideshow touch controls: Added left/right tap zones for previous/next page navigation.
+  - Slideshow gesture behavior: Kept swipe navigation and tuned tap-vs-swipe handling for more reliable page turns.
+  - Slideshow quick exit: System back gesture/button now returns directly to gallery overview from slideshow.
+  - Slideshow theme sync: Slideshow background/colors follow Sauce Tracker theme + accent mode.
+  - Browser privacy session hardening: API and image clients now run with `NO_COOKIES`.
+  - Browser exit privacy cleanup: On browser close/destroy, clears session pools, cookies, web storage, and in-memory thumbnail cache.
+  - Search/input unification: Merged gallery-code and broad search behavior into one primary `Search everything` field.
+  - Parser priority rule: Code/hash/link/artist/group parsing is attempted before generic keyword search logic.
+  - Direct route detection for single terms: Single recognized terms can open typed pages directly (`/tag/`, `/language/`, `/character/`, `/parody/`, `/category/`, `/artist/`, `/group/`) instead of generic search.
+  - Direct route from single tag filter: If exactly one tag filter is selected, browser open targets that tag-type route directly.
+  - Direct route URL recognition: Pasted links like `https://nhentai.net/tag/{name}/popular` (and other typed routes) are parsed as direct route targets.
+  - Hashtag search parity: `#123456` input works the same as `123456` inside search logic.
+  - Expandable search bars: Search and selected-tags fields expand vertically to fit long content.
+  - Search UI consistency: Search field now matches the outlined/label style used by tag filter.
+  - Search reset action: Added dedicated `Reset search` control beside filter actions.
+  - Browser open query upgrades: Open-in-browser now supports combined search terms + selected tags in one generated query.
+  - Blocked-tags browser integration: Blocked tags are automatically appended as exclusions in generated browser searches.
+  - Blocked-tags management page: Added full block-tag picker/list in settings with sorting and filtering controls.
+  - Blocked-tags source fetch: Added "Fetch all tags" workflow from paginated popular tags pages until data ends.
+  - Blocked-tags search bar: Added quick local search inside blocked-tag management.
+  - Blocked-tags toggles: Separate options for applying blocked tags to browser home vs search/open flows.
+  - Blocked-tags reset action: Added quick reset for blocked-tag filter state in settings.
+  - Share intent support: Sauce Tracker appears as a share target and pastes shared text/link directly into search.
+  - Share-lock security fix: Share-open path now respects app lock (no bypass when PIN/biometric is enabled).
+  - Browser clipboard import prompts: Copying supported IDs/links in browser can prompt immediate add/update without leaving browser.
+  - Browser-library status mapping: Browser cards now reflect local library state (read/rating/imported) when the item already exists.
+  - Browser to-library safety prompt: Editing rating/read on non-imported browser items prompts to import first.
+  - Browser auto-import on save: Saving rating/read from browser can import missing item automatically and persist status.
+  - Incognito restrictions expansion: Disabled sensitive actions in incognito where needed (pin/read/open/copy pathways).
+  - Incognito visibility hardening: Browser/library indicators and sensitive metadata are obscured in incognito mode.
+  - Incognito toggle protection: Incognito mode toggle can require app-lock authentication.
+  - Entry layout control: Added settings for configurable entry columns with preview.
+  - Gallery layout mode: Added pure gallery-style layout mode for entries.
+  - Gallery mode safety prompt: Enabling gallery mode warns/assists with required thumbnail setting.
+  - Thumbnail preload controls: Added startup preload percentage control (0-100%).
+  - Startup preload stability fixes: Improved launch flow so preload-heavy startup is less crash-prone.
+  - Default collapsed startup: Entries/tags/artists sections load collapsed by default on app start.
+  - Collapse behavior corrections: Artists/groups visibility no longer depends incorrectly on entries panel state.
+  - Auto-selection fix: Removed unwanted first-item auto-select in common expand/sort/open flows.
+  - Series detection engine: Added fuzzy sequence detection to find related entries in multi-part works.
+  - Series quick navigation: Selected entry can show previous/next related part buttons when detected.
+  - Series privacy alignment: Series navigation controls are hidden/disabled in incognito mode.
+  - Pin/unpin safety prompts: Added confirmation dialogs for pin and unpin actions.
+  - Pin privacy alignment: Pin/unpin actions are blocked in incognito mode.
+  - Settings analytics card: Added a dedicated stats section in settings.
+  - Analytics time ranges: Stats can be viewed by `today`, `week`, `month`, `year`, and `all time`.
+  - Analytics metrics: Added read totals, pages read, and top-used tags + top creators/groups.
+  - Analytics top-lists tuning: Top tags and top creators/groups now show top 5 each.
+  - Incognito stats behavior: Stats values/lists are privacy-obfuscated in incognito while range chips (today/week/month/year/all time) remain visible and usable.
+  - Selected-entry action placement: Moved `Re-fetch` and `Delete` into the selected-entry code row for faster access.
+  - Package/dependency cleanup: Removed Gecko dependency path from current browser stack, reducing APK size.
+  - Signed 1.2 release: Built as Sauce-Tracker-1.2-release.apk (versionCode 5, versionName 1.2).
