@@ -366,3 +366,85 @@
   - Suggestion session reroll behavior: Refresh/skip handling was refined so current-session exclusions stay temporary instead of acting like permanent hides.
 
   - Signed 1.4.5 release: Built as Sauce-Tracker-1.4.5-release.apk (versionCode 8, versionName 1.4.5).
+
+
+
+### Sauce Tracker 1.5 - Heatmap + Local Download Update--------------------------------------------------------------------------------------------------------------------------------------
+
+  - Heatmap Overview on home: Added a large interactive `Heatmap Overview` card directly on the main screen with `Tags / Entries` switching.
+  - Home heatmap interaction parity: Home heatmap now supports the same tap-driven tag/entry inspection flow as the settings graph.
+  - Graph bottom-sheet navigation: Back gestures inside graph/tag/entry drill-down now step through the graph flow correctly instead of exiting too early.
+  - Graph detail redesign: Tag taps open a filtered local-entry list; entry taps open the full selected-entry style detail sheet.
+  - Graph prevalence bars: Tag/entry graph sheets now show `Website / Library / Relative` prevalence summaries in a full-width header strip.
+  - Graph sheet polish: Home/settings graph sheets gained rounded drag-handle expansion behavior and cleaner header placement.
+  - Graph performance caching: Thumbnail/session caches and saved entry-layout cache reuse reduce repeated graph recomputation work.
+  - Manual entry-heatmap rebuild: Added `Recalculate Entry Heatmap` in Settings with explicit confirmation/progress flow.
+  - Saved entry heatmap cache: Entry heatmap layout is now stored and reused instead of being recomputed automatically every app launch.
+  - Entry heatmap overhaul: Reworked the saved `Entries` heatmap toward clearer family/island structure with circle-first family placement.
+  - Family-outline refinement: Entry heatmap family circles now better follow final packed entry footprints and avoid obvious offset drift.
+  - Entry heatmap privacy hardening: Incognito mode now hides graph details and disables graph interactions that would reveal sensitive info.
+
+  - Local gallery downloads: Selected local entries now support direct per-entry gallery download to a configurable downloads folder.
+  - Download prompt flow: Downloading shows intro/confirm dialogs with remembered default-folder behavior.
+  - Local slideshow source path: Downloaded galleries now open slideshow from local files instead of the web path.
+  - Local gallery info page: Download bundles include a generated first info image with title / artist / code / cover for use outside the app.
+  - Downloaded-folder integration: `Local` actions now route directly to the correct downloaded entry folder flow.
+  - Local delete split options: Entry delete prompts can now remove app entry only, local files only, or both.
+  - Re-download support: Long-pressing `Local` can replace an existing local download with a fresh copy.
+  - Downloaded filter: Entries view now includes a `Show Downloaded` filter mode.
+  - Batch gallery downloads: Download and re-download prompts now support multi-select batch download mode with progress feedback.
+  - Download intro flow refinement: The first local-download popup now stays focused on folder choice (`Change Folder / Cancel / Continue`), while batch download remains on the second confirmation step.
+  - Gallery media hiding: Download root writes `.nomedia` so downloaded pages stay out of normal gallery apps.
+
+  - Reader mode chooser: Gallery slideshow now supports both horizontal and vertical reading layouts.
+  - Hold-hover release picker: Reader mode selection now uses a hold-and-drag chooser matching the star-selector interaction style.
+  - Reader mode persistence: Chosen slideshow layout mode stays remembered instead of resetting each time.
+  - Vertical reader polish: Vertical mode shows clean page-number-only overlays without filename clutter.
+  - Reader handoff polish: Switching between horizontal and vertical modes now preserves the current page instead of resetting to page 1.
+  - Reader immersion mode: Middle-tap can fade slideshow chrome in and out for an image-only reading view.
+  - Reader direction setting: Horizontal slideshow now supports `Western` and `Manga` reading direction from settings.
+  - Reader transition polish: Mode-switch and immersion animations were smoothed, with vertical launch/reveal behavior aligned more closely to horizontal mode.
+  - Reader stability fixes: Vertical mode regained proper inertial scrolling and stable center-based page tracking after earlier gesture regressions.
+
+  - Local selected-entry polish: Added download/local actions into the selected-entry code/action row and refined related confirmation flows.
+  - Selected-entry accent fix: Local selected-entry title highlighting now follows the app accent color instead of device accent leakage.
+  - Selected-entry read timestamp: Local selected-entry detail now shows `Read at` directly under the fetched date when available.
+  - Local entry read-date sort: Local entries now include a `Read` ascending/descending sort alongside title/pages/uploaded/fetched.
+  - Browser/incognito/graph polish: Multiple visual refinements were made across graph sheets, reader transitions, and privacy-safe graph rendering.
+  - Timezone display fix: `Added`, `Fetched`, and `Read` timestamps now render in local timezone instead of looking one hour off.
+  - Browser back-stack sort state: `Recent / Today / Week / All Time` selection is now preserved when opening a gallery and backing out.
+  - CSV export: Settings now include a CSV export path for library data and related stats summaries.
+  - Subscription system: Tags and artists/groups now support subscribe bells, a `Subscriptions` home section, notification settings, manual refresh, and import/export through backups.
+  - Subscription polish: Added a subscriptions list popup, incognito handling, bell permission prompt on first subscribe, and more consistent subscription row behavior.
+  - Suggestion weighting expansion: Suggestions now include a `Length / Pages` weight and stronger language-specific matching.
+  - Suggestion matching cleanup: `translated` / `translation` no longer influence suggestion preference weighting or candidate matching.
+
+  - Signed 1.5 release: Built as Sauce-Tracker-1.5-release.apk (versionCode 9, versionName 1.5).
+
+
+
+### Sauce Tracker 1.6 - Dashboard, Reading History + Performance Update--------------------------------------------------------------------------------------------------------------------------------------
+
+  - Modern dashboard: Added an optional full-page Home dashboard while preserving the original Home layout as a Legacy UI setting.
+  - Dashboard navigation: Entries, Tags, Artists / Groups, Suggested entries, Subscriptions, Heatmap, and Reading History now open as dedicated full-page surfaces with remembered in-app state.
+  - Dashboard polish: Dashboard surface changes now reveal smoothly, dashboard cards use shape-matched press feedback, and widget pager pages have intentional spacing.
+  - Atomic theme updates: Light/Dark/Auto and accent changes update app content and Android system bars together without returning the user to the dashboard.
+  - Transition polish: Dedicated dashboard pages now keep the Search Everything panel stable while page content fades in without the earlier flicker.
+  - Modern Tags and Artists / Groups: Added full-width visual list pages with sorting, subscriptions, expanded creator entries, and direct entry detail expansion.
+  - Creator routing: Artist/group links inside entry details now navigate to, expand, and scroll to the matching modern creator card.
+  - Dashboard discovery: Suggested and Random entries share a swipeable dashboard widget, with swipeable larger previews for random covers.
+  - Subscription dashboard: Added a swipeable Subscriptions / Heatmap / Reading History widget plus full pages for updates, heatmap, and reading history.
+  - Subscription inbox: Subscription updates are now enabled by default with read/pin/dismiss handling and dashboard-style presentation.
+  - Reading history: Added persistent per-session read history, re-read recording, editable/removable history cards, average ratings, and daily activity entry drill-downs.
+  - Rating presentation: Entry cards, selected detail, and browser views use the current averaged rating rather than only the first read rating.
+  - Filter chips and shortcuts: Active tag filters now render as removable inline pills, clear actions are available directly from Search Everything, and dashboard long-press shortcuts are enabled by default.
+  - Browser improvements: Creator/tag browsing supports reliable pagination, local-library status, duplicate-check mode controls, full-screen duplicate menu dimming, and rounded pinned-card glow treatment.
+  - Browser incognito polish: Browser incognito mode now switches with a themed transition cover so privacy/theme rebuilds do not expose partial reload flicker.
+  - Browser privacy hardening: Browser result titles/codes and slideshow top-bar titles are now obfuscated in incognito mode.
+  - Entry detail polish: Selected-entry detail loading now keeps the tapped card responsive first and fades heavier metadata in afterward by default.
+  - Browser performance: Browser duplicate work pauses during scrolling and batches local-library lookups; local library thumbnail archives are indexed for faster reuse.
+  - Adaptive image loading: Entry and browser views use lower-cost thumbnails while scrolling and restore the normal image once idle; startup preload warms the same archive-backed thumbnail path.
+  - Performance controls: Added default-on adaptive scrolling thumbnails and an optional diagnostics overlay for frame rate, thumbnail throughput, duplicate checks, and cache hits.
+  - Thumbnail loading: Added batched loading for local and browser entries giving 31x increase in load time.
+  - Legacy preservation: Legacy Home visual structure remains available and separate from dashboard-specific presentation work.
+  - Signed 1.6 release: Built as Sauce-Tracker-1.6-release.apk (versionCode 10, versionName 1.6).
