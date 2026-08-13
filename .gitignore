@@ -1,0 +1,15 @@
+.gradle/
+.gradle-user-home/
+.android-user-home/
+.idea/
+**/build/
+local.properties
+signing.properties
+*.keystore
+*.jks
+*.apk
+*.aab
+*.log
+captures/
+dist/
+gradle/wrapper/*.zip

@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <application
+        android:name=".app.SauceTrackerApplication"
+        android:allowBackup="true"
+        android:icon="@drawable/app_icon"
+        android:roundIcon="@drawable/app_icon"
+        android:label="@string/app_name"
+        android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar">
+        <provider
+            android:name="androidx.startup.InitializationProvider"
+            android:authorities="${applicationId}.androidx-startup"
+            tools:node="remove" />
+        <activity
+            android:name=".feature.browser.GalleryBrowserActivity"
+            android:exported="false" />
+        <activity
+            android:name=".feature.slideshow.GallerySlideshowActivity"
+            android:exported="false" />
+        <activity
+            android:name=".feature.experimentalgallery.LocalDownloadedGalleryActivity"
+            android:exported="false" />
+        <activity
+            android:name=".feature.experimentalgallery.ExperimentalGalleryActivity"
+            android:exported="false" />
+        <activity
+            android:name=".app.MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+        </activity>
+        <activity-alias
+            android:name=".app.GitHubMediaLauncher"
+            android:targetActivity=".app.MainActivity"
+            android:exported="true"
+            android:process=":githubmedia"
+            android:permission="android.permission.DUMP" />
+    </application>
+
+</manifest>

@@ -1,0 +1,6 @@
+# Copy this file to signing.properties and fill it locally.
+# signing.properties and Android keystores are intentionally ignored by Git.
+SAUCE_RELEASE_STORE_FILE=C:\\path\\to\\sauce-tracker-release.keystore
+SAUCE_RELEASE_STORE_PASSWORD=
+SAUCE_RELEASE_KEY_ALIAS=
+SAUCE_RELEASE_KEY_PASSWORD=
