@@ -15,19 +15,12 @@ internal data class CachedSuggestionRows(
 
 internal class SuggestionCacheStore(private val preferences: SharedPreferences) {
     fun loadRows(fingerprint: String): CachedSuggestionRows? {
-        val root = preferences.getString(KEY_ROWS, null)
-            ?.takeIf { it.isNotBlank() }
-            ?.let { runCatching { JSONObject(it) }.getOrNull() }
-            ?: return null
+        val root = loadRowsRoot() ?: return null
         if (root.optString("fingerprint") != fingerprint) return null
-        val rows = decodeRows(root.optJSONArray("rows") ?: JSONArray())
-        if (rows.isEmpty()) return null
-        return CachedSuggestionRows(
-            fingerprint = fingerprint,
-            rows = rows,
-            savedAtMillis = root.optLong("savedAtMillis", 0L)
-        )
+        return decodeCachedRows(root)
     }
+
+    fun loadLatestRows(): CachedSuggestionRows? = loadRowsRoot()?.let(::decodeCachedRows)
 
     fun saveRows(fingerprint: String, rows: List<SuggestedEntryRow>) {
         if (rows.isEmpty()) return
@@ -37,6 +30,20 @@ internal class SuggestionCacheStore(private val preferences: SharedPreferences) 
             .put("savedAtMillis", System.currentTimeMillis())
             .put("rows", encodeRows(rows.take(MAX_RESULT_ROWS)))
         preferences.edit().putString(KEY_ROWS, root.toString()).apply()
+    }
+
+    private fun loadRowsRoot(): JSONObject? = preferences.getString(KEY_ROWS, null)
+        ?.takeIf { it.isNotBlank() }
+        ?.let { runCatching { JSONObject(it) }.getOrNull() }
+
+    private fun decodeCachedRows(root: JSONObject): CachedSuggestionRows? {
+        val rows = decodeRows(root.optJSONArray("rows") ?: JSONArray())
+        if (rows.isEmpty()) return null
+        return CachedSuggestionRows(
+            fingerprint = root.optString("fingerprint"),
+            rows = rows,
+            savedAtMillis = root.optLong("savedAtMillis", 0L)
+        )
     }
 
     fun loadGalleryMetadata(nowMillis: Long = System.currentTimeMillis()): Map<Int, GalleryData> {

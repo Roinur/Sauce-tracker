@@ -4,6 +4,10 @@ import com.example.saucetracker.core.network.shouldRetryWebsiteRequest
 import com.example.saucetracker.core.network.TemporaryWebsiteException
 import com.example.saucetracker.core.network.invalidGalleryResponseMessage
 import com.example.saucetracker.core.network.websiteHttpFailure
+import com.example.saucetracker.core.change.LibraryChange
+import com.example.saucetracker.core.change.LibraryChangeAccumulator
+import com.example.saucetracker.core.change.LibraryChangeImpact
+import com.example.saucetracker.core.change.LibraryChangeReason
 import com.example.saucetracker.feature.heatmap.isInsideCenteredThumbnailZone
 import com.example.saucetracker.feature.library.privacy.LibraryIncognitoPolicy
 import com.example.saucetracker.feature.browser.extractCommentsSection
@@ -24,8 +28,62 @@ import com.example.saucetracker.feature.library.detail.filterRelatedEntriesByRea
 import com.example.saucetracker.feature.library.detail.resolvedRelatedEntryMode
 import com.example.saucetracker.feature.library.detail.showReadRelatedEntries
 import com.example.saucetracker.feature.dashboard.includeDirectNavigationEntry
+import com.example.saucetracker.feature.dashboard.suggestionRefreshErrorMessage
+import kotlinx.coroutines.CancellationException
 
 class AppPoliciesTest {
+    @Test
+    fun `library changes coalesce impacts and keep latest explicit selection`() {
+        val changes = LibraryChangeAccumulator()
+        changes.record(LibraryChange.tagFilterChanged())
+        changes.record(LibraryChange.tagFilterSuggestionsChanged())
+        changes.record(
+            LibraryChange.entryContentChanged(
+                reason = LibraryChangeReason.RATING_CHANGED,
+                code = 42
+            )
+        )
+        changes.record(LibraryChange.pinChanged(84))
+
+        val batch = changes.drain()
+
+        assertEquals(84, batch?.selectCode)
+        assertTrue(LibraryChangeImpact.ENTRIES in requireNotNull(batch).impacts)
+        assertTrue(LibraryChangeImpact.CREATORS in batch.impacts)
+        assertTrue(LibraryChangeImpact.SUGGESTIONS_REFRESH in batch.impacts)
+        assertTrue(LibraryChangeImpact.READ_ANALYTICS in batch.impacts)
+        assertFalse(changes.hasPendingChanges)
+        assertNull(changes.drain())
+    }
+
+    @Test
+    fun `rating and pin changes invalidate only their dependent projections`() {
+        val rating = LibraryChange.entryContentChanged(LibraryChangeReason.RATING_CHANGED, 7)
+        assertEquals(
+            setOf(
+                LibraryChangeImpact.ENTRIES,
+                LibraryChangeImpact.TAGS,
+                LibraryChangeImpact.RELATED_ENTRIES,
+                LibraryChangeImpact.READ_ANALYTICS
+            ),
+            rating.impacts
+        )
+
+        val pin = LibraryChange.pinChanged(7)
+        assertEquals(setOf(LibraryChangeImpact.ENTRIES), pin.impacts)
+    }
+
+    @Test
+    fun `full library changes invalidate every derived library projection once`() {
+        val changes = LibraryChangeAccumulator()
+        changes.record(LibraryChange.fullRefresh(LibraryChangeReason.ENTRY_IMPORTED, 17))
+        changes.record(LibraryChange.fullRefresh(LibraryChangeReason.ENTRY_UPDATED, 17))
+
+        val batch = requireNotNull(changes.drain())
+        assertEquals(LibraryChangeImpact.entriesAndDerivedData, batch.impacts)
+        assertEquals(setOf(LibraryChangeReason.ENTRY_IMPORTED, LibraryChangeReason.ENTRY_UPDATED), batch.reasons)
+    }
+
     @Test
     fun `modern entries always render after activity recreation`() {
         assertTrue(LibraryIncognitoPolicy.shouldRenderEntries(legacyHomeUi = false, entriesCardCollapsed = true))
@@ -213,6 +271,15 @@ class AppPoliciesTest {
         val result = includeDirectNavigationEntry(visible, entryRow(code = 202))
 
         assertEquals(listOf(101, 202), result.map { it.code })
+    }
+
+    @Test
+    fun `cancelled suggestion refresh is normal control flow and not a user error`() {
+        assertNull(suggestionRefreshErrorMessage(CancellationException("StandaloneCoroutine was cancelled")))
+        assertEquals(
+            "Could not refresh suggestions:\nnetwork unavailable",
+            suggestionRefreshErrorMessage(IllegalStateException("network unavailable"))
+        )
     }
 
     private fun entryRow(code: Int) = EntryRow(

@@ -287,9 +287,11 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Cache
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
+import java.io.File
 import java.nio.ByteBuffer
 import java.nio.charset.Charset
 import java.nio.charset.CharacterCodingException
@@ -302,6 +304,8 @@ import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Semaphore
 import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.cos
@@ -313,6 +317,18 @@ import kotlin.math.sqrt
 import kotlin.math.roundToInt
 private val thumbnailHttpClient: OkHttpClient by lazy {
     HttpClientFactory.create(HttpClientProfile.THUMBNAIL)
+}
+private val persistentThumbnailHttpClients = ConcurrentHashMap<String, OkHttpClient>()
+private val thumbnailFetchSlots = Semaphore(6, true)
+
+private fun persistentThumbnailHttpClient(context: Context): OkHttpClient {
+    val cacheDirectory = File(context.applicationContext.cacheDir, "thumbnail-http-v1")
+    return persistentThumbnailHttpClients.computeIfAbsent(cacheDirectory.absolutePath) {
+        HttpClientFactory.create(
+            profile = HttpClientProfile.THUMBNAIL,
+            cache = Cache(cacheDirectory, 128L * 1024L * 1024L)
+        )
+    }
 }
 
 private fun buildThumbnailCandidateUrls(url: String): List<String> {
@@ -330,7 +346,11 @@ private fun buildThumbnailCandidateUrls(url: String): List<String> {
     return extOrder.map { "$base.$it$suffix" }
 }
 
-internal fun fetchThumbnailBitmapRawOnce(url: String, lowRes: Boolean = false): Bitmap? {
+private fun fetchThumbnailBitmapRawOnce(
+    client: OkHttpClient,
+    url: String,
+    lowRes: Boolean = false
+): Bitmap? {
     val request = Request.Builder()
         .url(url)
         .header(
@@ -341,16 +361,24 @@ internal fun fetchThumbnailBitmapRawOnce(url: String, lowRes: Boolean = false): 
         .header("Referer", "https://nhentai.net/")
         .build()
 
-    return thumbnailHttpClient.newCall(request).execute().use { rsp ->
-        if (!rsp.isSuccessful) return null
-        val bytes = rsp.body?.bytes() ?: return null
-        val options = BitmapFactory.Options().apply {
-            inPreferredConfig = android.graphics.Bitmap.Config.RGB_565
-            inSampleSize = if (lowRes) 2 else 1
+    thumbnailFetchSlots.acquire()
+    try {
+        return client.newCall(request).execute().use { rsp ->
+            if (!rsp.isSuccessful) return null
+            val bytes = rsp.body?.bytes() ?: return null
+            val options = BitmapFactory.Options().apply {
+                inPreferredConfig = android.graphics.Bitmap.Config.RGB_565
+                inSampleSize = if (lowRes) 2 else 1
+            }
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
         }
-        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
+    } finally {
+        thumbnailFetchSlots.release()
     }
 }
+
+internal fun fetchThumbnailBitmapRawOnce(url: String, lowRes: Boolean = false): Bitmap? =
+    fetchThumbnailBitmapRawOnce(thumbnailHttpClient, url, lowRes)
 
 internal fun fetchThumbnailBitmapRaw(url: String): Bitmap? {
     return fetchThumbnailBitmapRaw(url, lowRes = false)
@@ -561,10 +589,13 @@ internal fun fetchThumbnailBitmap(
     }
     val candidates = buildThumbnailCandidateUrls(url)
     if (candidates.isEmpty()) return null
+    val client = persistentThumbnailHttpClient(context)
 
     candidates.forEach { candidateUrl ->
         repeat(2) { attempt ->
-            val fetched = runCatching { fetchThumbnailBitmapOnce(candidateUrl, lowRes = lowRes) }.getOrNull()
+            val fetched = runCatching {
+                fetchThumbnailBitmapRawOnce(client, candidateUrl, lowRes = lowRes)?.asImageBitmap()
+            }.getOrNull()
             if (fetched != null) {
                 return fetched
             }

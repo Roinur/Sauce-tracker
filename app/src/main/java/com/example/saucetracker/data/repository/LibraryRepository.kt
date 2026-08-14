@@ -51,8 +51,12 @@ internal class LibraryRepository(
     fun setEntryRead(code: Int, isRead: Boolean) = entries.setRead(code, isRead)
     fun setEntryPinned(code: Int, pinned: Boolean) = entries.setPinned(code, pinned)
 
-    fun tags(textFilter: String, sortField: TagSortField, sortDirection: SortDirection): List<TagCountRow> =
-        tags.counts(textFilter, sortField, sortDirection)
+    fun tags(
+        textFilter: String,
+        sortField: TagSortField,
+        sortDirection: SortDirection,
+        visibleEntryCodes: Collection<Int>? = null
+    ): List<TagCountRow> = tags.counts(textFilter, sortField, sortDirection, visibleEntryCodes)
     fun tagRoute(tagId: Long): TagRouteRef? = tags.route(tagId)
     fun setPopularTagBlocked(tagId: Long, blocked: Boolean) = tags.setBlocked(tagId, blocked)
     fun clearBlockedPopularTags() = tags.clearBlocked()

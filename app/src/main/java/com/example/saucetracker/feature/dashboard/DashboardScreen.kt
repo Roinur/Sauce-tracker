@@ -317,6 +317,12 @@ internal fun DashboardScreen(vm: DashboardViewModel) {
             vm.consumeOpenSubscriptionsRequest()
         }
     }
+    LaunchedEffect(vm.pendingOpenSauceFinder, vm.appLocked) {
+        if (vm.pendingOpenSauceFinder && !vm.appLocked) {
+            homeSurface = HomeSurface.DASHBOARD
+            vm.consumeOpenSauceFinderRequest()
+        }
+    }
     val systemDark = isSystemInDarkTheme()
     val useDark = when (uiState.themeMode) {
         ThemeMode.SYSTEM -> systemDark

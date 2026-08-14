@@ -3,6 +3,11 @@ package com.example.saucetracker.feature.dashboard
 import com.example.saucetracker.*
 import com.example.saucetracker.core.ui.theme.AccentMode
 import com.example.saucetracker.core.media.*
+import com.example.saucetracker.core.change.LibraryChange
+import com.example.saucetracker.core.change.LibraryChangeAccumulator
+import com.example.saucetracker.core.change.LibraryChangeBatch
+import com.example.saucetracker.core.change.LibraryChangeImpact
+import com.example.saucetracker.core.change.LibraryChangeReason
 import com.example.saucetracker.background.syncSubscriptionBackgroundWork
 import com.example.saucetracker.background.syncSubscriptionNotificationSummaryForContext
 import com.example.saucetracker.data.backup.*
@@ -302,6 +307,7 @@ import com.example.saucetracker.data.repository.SubscriptionRepository
 import com.example.saucetracker.data.repository.SuggestionsRepository
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -383,6 +389,11 @@ internal fun includeDirectNavigationEntry(
     return visibleEntries + directTarget
 }
 
+internal fun suggestionRefreshErrorMessage(error: Throwable): String? {
+    if (error is CancellationException) return null
+    return "Could not refresh suggestions:\n${error.message ?: "unknown error"}"
+}
+
 private fun isTwoWordCreatorName(value: String): Boolean =
     parseCreatorSlug(value).split(Regex("\\s+")).count(String::isNotBlank) == 2
 
@@ -437,6 +448,7 @@ private fun extractCreatorNameCandidates(text: String): List<String> {
 
 private const val SUGGESTION_VISIBLE_TARGET = 12
 private const val SUGGESTION_CANDIDATE_TARGET = 30
+private const val LIBRARY_FILTER_CHANGE_COALESCE_MS = 90L
 
 class DashboardViewModel(application: Application) : AndroidViewModel(application) {
     private val backupImporter = BackupImporter()
@@ -445,6 +457,14 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     private val client = NhentaiApiClient()
     private val suggestionApi = SuggestionApiClient()
     private val libraryRepository = LibraryRepository(db)
+    private val sauceFinderController = com.example.saucetracker.feature.saucefinder.SauceFinderController(
+        owner = this,
+        application = application,
+        loadDetails = {
+            val codes = libraryRepository.allEntryCodes()
+            libraryRepository.entryDetails(codes)
+        }
+    )
     private val suggestionsRepository = SuggestionsRepository(suggestionApi)
     private val suggestionCacheStore by lazy { SuggestionCacheStore(prefs) }
     private val subscriptionRepository = SubscriptionRepository(db)
@@ -775,7 +795,10 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
             libraryRepository = libraryRepository,
             mainHandler = mainHandler,
             shouldReloadDownloadedEntries = { entryReadFilter == EntryReadFilterMode.DOWNLOADED },
-            reloadEntries = { loadEntries(selectedCode) },
+            reloadEntries = {
+                loadEntries(selectedCode)
+                loadTags()
+            },
             onStatus = ::setStatus,
             onError = { message -> errorDialogMessage = message },
             onInfo = { message -> infoDialogMessage = message }
@@ -808,9 +831,14 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     private var awaitingBrowserRatingPrompt: Boolean = false
     private var pendingBrowserRatingWasRead: Boolean = false
     private var pendingIncomingShareText: String? = null
+    private var pendingIncomingShareImage: Uri? = null
+    var pendingOpenSauceFinder by mutableStateOf(false)
+        private set
+    internal val sauceFinderState = sauceFinderController.state
     // Session-scoped "NEW" markers (in-memory only; reset on process restart).
     private val sessionNewEntryCodes = mutableStateMapOf<Int, Boolean>()
     private val sessionKnownEntryCodes = linkedSetOf<Int>()
+    private var importedEntryCodes by mutableStateOf<Set<Int>>(emptySet())
     private val hiddenSuggestedCodes = mutableStateMapOf<Int, Boolean>()
     private val hiddenSuggestedAtMillis = mutableStateMapOf<Int, Long>()
     private val hiddenSuggestedThumbnailUrls = mutableStateMapOf<Int, String>()
@@ -819,6 +847,9 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     private val suggestionDuplicateHintCache = mutableMapOf<Int, DuplicateHint?>()
     private val suggestionGalleryCache = mutableMapOf<Int, GalleryData>()
     private var suggestionsRefreshJob: Job? = null
+    private val libraryChangeAccumulator = LibraryChangeAccumulator()
+    private val coalescedLibraryChangeAccumulator = LibraryChangeAccumulator()
+    private var libraryChangeFlushJob: Job? = null
     private var suggestionsRefreshGeneration: Long = 0L
     private var suggestionDuplicateHintCacheSeedVersion: Int = 0
     private var suggestionDuplicateSeedIndex = buildLocalDuplicateSeedIndex(emptyList())
@@ -861,6 +892,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         reloadSubscriptionsState()
         updateEntryHeatmapCacheStatus(null)
         loadHiddenSuggestionCodesIntoMemory()
+        restoreSuggestedPreviewFromCache()
         synchronized(suggestionGalleryCache) {
             suggestionGalleryCache.putAll(suggestionCacheStore.loadGalleryMetadata())
         }
@@ -922,17 +954,20 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         if (code <= 0) return
         sessionNewEntryCodes[code] = true
         sessionKnownEntryCodes += code
+        importedEntryCodes = sessionKnownEntryCodes.toSet()
     }
 
     private fun forgetSessionEntryCode(code: Int) {
         if (code <= 0) return
         sessionNewEntryCodes.remove(code)
         sessionKnownEntryCodes.remove(code)
+        importedEntryCodes = sessionKnownEntryCodes.toSet()
     }
 
     private fun clearSessionNewEntryTracking() {
         sessionNewEntryCodes.clear()
         sessionKnownEntryCodes.clear()
+        importedEntryCodes = emptySet()
         sessionEntryTrackingInitialized = false
     }
 
@@ -955,6 +990,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 sessionKnownEntryCodes += code
             }
         }
+        importedEntryCodes = sessionKnownEntryCodes.toSet()
     }
 
     fun hideSuggestedEntry(code: Int, thumbnailUrl: String = "") {
@@ -1264,6 +1300,24 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         )
     }
 
+    private fun restoreSuggestedPreviewFromCache() {
+        val cached = suggestionCacheStore.loadLatestRows() ?: return
+        val hiddenCodes = hiddenSuggestedCodes.keys.toSet()
+        viewModelScope.launch {
+            val importedCodes = withContext(Dispatchers.IO) {
+                libraryRepository.allEntryCodes().toSet()
+            }
+            val visible = cached.rows.filterNot { row ->
+                row.code in importedCodes || row.code in hiddenCodes
+            }
+            if (suggestedEntries.isEmpty() && visible.isNotEmpty()) {
+                suggestedEntries = visible.take(SUGGESTION_VISIBLE_TARGET)
+                suggestedOverflowEntries.clear()
+                suggestedOverflowEntries.addAll(visible.drop(SUGGESTION_VISIBLE_TARGET))
+            }
+        }
+    }
+
     private fun syncHiddenSuggestionCodesFromPrefs() {
         val rawCodes = prefs.getString(KEY_SUGGESTION_HIDDEN_CODES, "").orEmpty()
         val rawEntries = prefs.getString(KEY_SUGGESTION_HIDDEN_ENTRIES, "").orEmpty()
@@ -1390,6 +1444,18 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         setStatus("Pasted shared text into Search everything.")
     }
 
+    private fun consumePendingShareImageIfUnlocked() {
+        enforceLockIfRequiredNow()
+        if (appLockEnabled && appLocked) {
+            setStatus("Shared image queued. Unlock to search for its source.")
+            return
+        }
+        val pending = pendingIncomingShareImage ?: return
+        pendingIncomingShareImage = null
+        pendingOpenSauceFinder = true
+        findSauce(pending)
+    }
+
     fun dismissInfoDialog() {
         infoDialogMessage = null
     }
@@ -1510,6 +1576,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         appLocked = false
         appLockNonce = now
         consumePendingShareTextIfUnlocked()
+        consumePendingShareImageIfUnlocked()
         if (!completePendingIncognitoToggleIfAny()) {
             setStatus("Unlocked.")
         }
@@ -1523,6 +1590,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         appLocked = false
         appLockNonce = now
         consumePendingShareTextIfUnlocked()
+        consumePendingShareImageIfUnlocked()
         if (!completePendingIncognitoToggleIfAny()) {
             setStatus("Unlocked.")
         }
@@ -1564,6 +1632,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         appLocked = false
         appLockNonce = now
         consumePendingShareTextIfUnlocked()
+        consumePendingShareImageIfUnlocked()
         setStatus("Incognito mode change cancelled.")
     }
 
@@ -1934,6 +2003,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         incognitoModeEnabled = preferenceReader.loadIncognitoMode()
         refreshAppLockOnResume()
         consumePendingShareTextIfUnlocked()
+        consumePendingShareImageIfUnlocked()
         refreshAll(selectedCode)
         if (!awaitingBrowserRatingPrompt) return
         awaitingBrowserRatingPrompt = false
@@ -2378,11 +2448,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun clearTagFilter() {
         activeTagFilterIds.clear()
-        loadEntries(null)
-        loadCreators()
-        if (!suggestedEntriesCollapsed) {
-            refreshSuggestedEntries(force = true)
-        }
+        publishTagFilterChange()
         setStatus("Tag filter cleared.")
     }
 
@@ -2484,6 +2550,29 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         }
 
         openCombinedSearchInBrowser(searchText = "", showEmptyPrompt = false)
+    }
+
+    fun queueIncomingShareImage(uri: Uri) {
+        pendingIncomingShareImage = uri
+        enforceLockIfRequiredNow()
+        consumePendingShareImageIfUnlocked()
+    }
+
+    fun consumeOpenSauceFinderRequest() {
+        pendingOpenSauceFinder = false
+    }
+
+    fun refreshSauceFinderStats() = sauceFinderController.refreshStats()
+
+    fun prepareSauceFinderLocalIndex() = sauceFinderController.prepareLocalIndex()
+
+    fun buildFullSauceFinderIndex() = sauceFinderController.buildFullIndex()
+
+    fun pauseFullSauceFinderIndex() = sauceFinderController.pauseFullIndex()
+
+    fun findSauce(uri: Uri) {
+        sauceFinderController.requestOpen()
+        sauceFinderController.find(uri)
     }
 
     private fun toggleGitHubMediaMode() {
@@ -2702,11 +2791,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         } else {
             activeTagFilterIds.add(tagId)
         }
-        loadEntries(null)
-        loadCreators()
-        if (!suggestedEntriesCollapsed) {
-            refreshSuggestedEntries(force = true)
-        }
+        publishTagFilterChange()
         if (activeTagFilterIds.isEmpty()) {
             setStatus("Tag filter cleared.")
         } else {
@@ -2783,6 +2868,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
             cycle[(currentIndex + 1) % cycle.size]
         }
         loadEntries(selectedCode)
+        loadTags()
         val message = when (entryReadFilter) {
             EntryReadFilterMode.ALL -> "Showing all entries."
             EntryReadFilterMode.READ -> "Showing read entries only."
@@ -2796,6 +2882,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         if (entryReadFilter == mode) return
         entryReadFilter = mode
         loadEntries(selectedCode)
+        loadTags()
         setStatus(
             when (mode) {
                 EntryReadFilterMode.ALL -> "Showing all entries."
@@ -2815,6 +2902,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         if (entryReadFilter !in normalized) {
             entryReadFilter = normalized.first()
             loadEntries(selectedCode)
+            loadTags()
         }
         setStatus("Entry mode cycle updated.")
     }
@@ -3522,16 +3610,23 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun updateRatingHistoryRow(code: Int, row: EntryRatingHistoryRow, rating: Int) {
         db.updateRatingHistoryRow(code, row, rating)
-        loadEntries(code)
-        selectEntry(code)
+        publishLibraryChange(
+            LibraryChange.entryContentChanged(LibraryChangeReason.RATING_HISTORY_CHANGED, code)
+        )
     }
 
     fun deleteRatingHistoryRow(code: Int, row: EntryRatingHistoryRow) {
         db.deleteRatingHistoryRow(code, row)
-        readAnalyticsLoaded = false
-        ensureReadAnalyticsLoaded(forceRefresh = true)
-        loadEntries(code)
-        selectEntry(code)
+        publishLibraryChange(
+            LibraryChange(
+                reason = LibraryChangeReason.RATING_HISTORY_CHANGED,
+                impacts = setOf(
+                    LibraryChangeImpact.ENTRIES,
+                    LibraryChangeImpact.READ_ANALYTICS_REFRESH
+                ),
+                selectCode = code
+            )
+        )
     }
 
     fun toggleSuggestedEntriesCollapsed() {
@@ -3913,7 +4008,9 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 suggestedEntries = suggestedEntries.filterNot { it.code == code }
                 suggestedOverflowEntries.removeAll { it.code == code }
                 clearSuggestedImportFlash(code)
-                refreshAll(code)
+                publishLibraryChange(
+                    LibraryChange.fullRefresh(LibraryChangeReason.ENTRY_IMPORTED, code)
+                )
                 setStatus("Imported suggested code $code.")
             }.onFailure { exc ->
                 errorDialogMessage = exc.message ?: "Could not import suggested entry."
@@ -4400,10 +4497,13 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                         )
                     }
                 }.getOrElse { exc ->
-                    errorDialogMessage = "Could not refresh suggestions:\n${exc.message ?: "unknown error"}"
+                    suggestionRefreshErrorMessage(exc)?.let { message ->
+                        errorDialogMessage = message
+                    } ?: throw exc
                     SuggestionRefreshResult(rows = emptyList(), infoMessage = null)
                 }
 
+                if (refreshGeneration != suggestionsRefreshGeneration) return@launch
                 if (computation.rows.isNotEmpty() || suggestedEntries.isEmpty()) {
                     suggestedEntries = computation.rows
                     suggestedOverflowEntries.clear()
@@ -4542,7 +4642,9 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
             creatorType = creatorLink.type,
             sourceUrl = creatorLink.sourceUrl
         )
-        refreshAll(selectedCode)
+        publishLibraryChange(
+            LibraryChange.fullRefresh(LibraryChangeReason.CREATOR_CHANGED, selectedCode)
+        )
         setStatus(
             if (added) {
                 "Added ${creatorLink.type} '${creatorLink.name}'."
@@ -4627,7 +4729,9 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 addedCount to skippedCount
             }
 
-            refreshAll(selectedCode)
+            publishLibraryChange(
+                LibraryChange.fullRefresh(LibraryChangeReason.CREATOR_CHANGED, selectedCode)
+            )
             if (unresolved > 0) {
                 infoDialogMessage = "Resolved ${deduped.size} creator/group item(s), $unresolved could not be resolved."
             }
@@ -4644,7 +4748,9 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
             }
             result.onSuccess { gallery ->
                 libraryRepository.upsertGallery(gallery)
-                refreshAll(code)
+                publishLibraryChange(
+                    LibraryChange.fullRefresh(LibraryChangeReason.ENTRY_UPDATED, code)
+                )
                 setStatus("Re-fetched code $code.")
             }.onFailure { exc ->
                 when (exc) {
@@ -4677,7 +4783,9 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         }
         libraryRepository.deleteEntry(code)
         forgetSessionEntryCode(code)
-        refreshAll(null)
+        publishLibraryChange(
+            LibraryChange.fullRefresh(LibraryChangeReason.ENTRY_DELETED)
+        )
         setStatus(
             if (removeLocalDownload) {
                 "Deleted code $code and removed its local download."
@@ -4690,7 +4798,9 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     fun clearAllWithoutExport() {
         val deleted = db.clearAllEntries()
         clearSessionNewEntryTracking()
-        refreshAll(null)
+        publishLibraryChange(
+            LibraryChange.fullRefresh(LibraryChangeReason.LIBRARY_CLEARED)
+        )
         infoDialogMessage = "Cleared ${deleted.entriesCleared} entries and ${deleted.creatorsCleared} artists/groups."
         setStatus("Cleared ${deleted.entriesCleared} entries and ${deleted.creatorsCleared} artists/groups.")
     }
@@ -4699,10 +4809,9 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         val safe = rating.coerceIn(0, 5)
         libraryRepository.setEntryRating(code, safe)
         libraryRepository.setEntryRead(code, true)
-        selectedEntryRelatedCache.clear()
-        readAnalyticsLoaded = false
-        loadEntries(code)
-        selectEntry(code)
+        publishLibraryChange(
+            LibraryChange.entryContentChanged(LibraryChangeReason.RATING_CHANGED, code)
+        )
         setStatus("Set rating for $code to $safe/5 and marked as read.")
     }
 
@@ -4717,10 +4826,9 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
             ?: false
         val next = !current
         libraryRepository.setEntryRead(code, next)
-        selectedEntryRelatedCache.clear()
-        readAnalyticsLoaded = false
-        loadEntries(code)
-        selectEntry(code)
+        publishLibraryChange(
+            LibraryChange.entryContentChanged(LibraryChangeReason.READ_STATE_CHANGED, code)
+        )
         setStatus(
             if (next) {
                 "Marked code $code as read."
@@ -4829,10 +4937,22 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
             }
             triggerSuggestedImportFlash(code)
             delay(520L)
-            readAnalyticsLoaded = false
             suggestedEntries = suggestedEntries.filterNot { it.code == code }
             clearSuggestedImportFlash(code)
-            refreshAll(code)
+            val reason = when (action) {
+                SuggestedQuickAction.PIN_TOGGLE -> LibraryChangeReason.PIN_CHANGED
+                SuggestedQuickAction.READ_TOGGLE -> LibraryChangeReason.READ_STATE_CHANGED
+                SuggestedQuickAction.SET_RATING -> LibraryChangeReason.RATING_CHANGED
+            }
+            publishLibraryChange(
+                if (result.insertedNew) {
+                    LibraryChange.fullRefresh(LibraryChangeReason.ENTRY_IMPORTED, code)
+                } else if (action == SuggestedQuickAction.PIN_TOGGLE) {
+                    LibraryChange.pinChanged(code)
+                } else {
+                    LibraryChange.entryContentChanged(reason, code)
+                }
+            )
             when (action) {
                 SuggestedQuickAction.PIN_TOGGLE -> {
                     setStatus(if (result.pinned) "Pinned code $code from suggestions." else "Unpinned code $code from suggestions.")
@@ -4864,8 +4984,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
             ?: db.isEntryPinned(code)
         val nextPinned = !currentPinned
         libraryRepository.setEntryPinned(code, nextPinned)
-        loadEntries(code)
-        selectEntry(code)
+        publishLibraryChange(LibraryChange.pinChanged(code))
         setStatus(
             if (nextPinned) {
                 "Pinned code $code."
@@ -4897,14 +5016,13 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         } else {
             libraryRepository.setEntryRating(prompt.code, safeRating)
             libraryRepository.setEntryRead(prompt.code, true)
-            selectedEntryRelatedCache.clear()
         }
-        readAnalyticsLoaded = false
         browserRatingPromptState = null
         pendingBrowserRatingCode = null
         pendingBrowserRatingWasRead = false
-        loadEntries(prompt.code)
-        selectEntry(prompt.code)
+        publishLibraryChange(
+            LibraryChange.entryContentChanged(LibraryChangeReason.RATING_CHANGED, prompt.code)
+        )
         setStatus(
             if (prompt.isReread) {
                 "Saved reread rating for ${prompt.code} without changing the original rating."
@@ -4983,8 +5101,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         val code = prompt.code
         val newPinned = prompt.targetPinned
         libraryRepository.setEntryPinned(code, newPinned)
-        loadEntries(code)
-        selectEntry(code)
+        publishLibraryChange(LibraryChange.pinChanged(code))
         setStatus(
             if (newPinned) {
                 "Pinned code $code."
@@ -5393,7 +5510,12 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
             }
             payload.suggestionCategoryWeights?.let { applyImportedSuggestionCategoryWeights(it) }
             payload.entryPinPriorityEnabled?.let { applyImportedEntryPinPriority(it) }
-            refreshAll(null)
+            publishLibraryChange(
+                LibraryChange(
+                    reason = LibraryChangeReason.LIBRARY_RESTORED,
+                    impacts = LibraryChangeImpact.entriesAndDerivedData(refreshSuggestions = false)
+                )
+            )
             reloadSubscriptionsState()
             if (!suggestedEntriesCollapsed && !incognitoModeEnabled) {
                 refreshSuggestedEntries(force = true)
@@ -5628,24 +5750,86 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     private fun refreshAll(selectCode: Int?) {
-        selectedEntryRelatedCache.clear()
-        loadTags()
-        loadEntries(selectCode)
-        loadCreators()
-        loadSavedStats()
-        if (suggestedEntries.isNotEmpty()) {
+        publishLibraryChange(
+            LibraryChange.fullRefresh(
+                reason = LibraryChangeReason.FALLBACK_REFRESH,
+                selectCode = selectCode
+            )
+        )
+    }
+
+    private fun publishTagFilterChange() {
+        // Keep the selected tag and its visible count in the same Compose frame. Only the remote
+        // suggestions refresh is expensive enough to debounce across a burst of tag selections.
+        publishLibraryChange(LibraryChange.tagFilterChanged())
+        publishCoalescedLibraryChange(
+            LibraryChange.tagFilterSuggestionsChanged(),
+            coalesceMillis = LIBRARY_FILTER_CHANGE_COALESCE_MS
+        )
+    }
+
+    private fun publishLibraryChange(change: LibraryChange) {
+        libraryChangeAccumulator.record(change)
+        applyPendingLibraryChanges(libraryChangeAccumulator)
+    }
+
+    private fun publishCoalescedLibraryChange(change: LibraryChange, coalesceMillis: Long) {
+        coalescedLibraryChangeAccumulator.record(change)
+        libraryChangeFlushJob?.cancel()
+        libraryChangeFlushJob = viewModelScope.launch {
+            delay(coalesceMillis)
+            libraryChangeFlushJob = null
+            applyPendingLibraryChanges(coalescedLibraryChangeAccumulator)
+        }
+    }
+
+    private fun applyPendingLibraryChanges(accumulator: LibraryChangeAccumulator) {
+        val batch = accumulator.drain() ?: return
+        applyLibraryChangeBatch(batch)
+    }
+
+    private fun applyLibraryChangeBatch(batch: LibraryChangeBatch) {
+        val impacts = batch.impacts
+        if (LibraryChangeImpact.RELATED_ENTRIES in impacts) {
+            selectedEntryRelatedCache.clear()
+        }
+        if (LibraryChangeImpact.ENTRIES in impacts) {
+            loadEntries(batch.selectCode)
+        }
+        if (LibraryChangeImpact.TAGS in impacts) {
+            loadTags()
+        }
+        if (LibraryChangeImpact.CREATORS in impacts) {
+            loadCreators()
+        }
+        if (LibraryChangeImpact.SAVED_STATS in impacts) {
+            loadSavedStats()
+        }
+        if (LibraryChangeImpact.SUGGESTIONS_EXCLUDE_IMPORTED in impacts && suggestedEntries.isNotEmpty()) {
             val importedCodes = libraryRepository.allEntryCodes().toSet()
             suggestedEntries = suggestionsViewModel.excludeImported(suggestedEntries, importedCodes)
             if (suggestedOverflowEntries.isNotEmpty()) {
                 suggestedOverflowEntries.removeAll { it.code in importedCodes || it.code in hiddenSuggestedCodes }
             }
         }
-        readAnalyticsLoaded = false
-        tagGraphLoaded = false
-        tagGraphSnapshot = null
-        tagGraphErrorMessage = null
-        entryHeatmapCacheNonce += 1L
-        updateEntryHeatmapCacheStatus(null)
+        if (LibraryChangeImpact.READ_ANALYTICS in impacts || LibraryChangeImpact.READ_ANALYTICS_REFRESH in impacts) {
+            readAnalyticsLoaded = false
+        }
+        if (LibraryChangeImpact.READ_ANALYTICS_REFRESH in impacts) {
+            ensureReadAnalyticsLoaded(forceRefresh = true)
+        }
+        if (LibraryChangeImpact.TAG_GRAPH in impacts) {
+            tagGraphLoaded = false
+            tagGraphSnapshot = null
+            tagGraphErrorMessage = null
+        }
+        if (LibraryChangeImpact.ENTRY_HEATMAP in impacts) {
+            entryHeatmapCacheNonce += 1L
+            updateEntryHeatmapCacheStatus(null)
+        }
+        if (LibraryChangeImpact.SUGGESTIONS_REFRESH in impacts && !suggestedEntriesCollapsed) {
+            refreshSuggestedEntries(force = true)
+        }
     }
 
     fun ensureReadAnalyticsLoaded(forceRefresh: Boolean = false) {
@@ -5942,7 +6126,8 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                     libraryRepository.tags(
                         textFilter = textSnapshot,
                         sortField = tagSortField,
-                        sortDirection = tagSortDirection
+                        sortDirection = tagSortDirection,
+                        visibleEntryCodes = loadedEntries.map { it.code }
                     )
                 }
                 tags = loadedTags
@@ -6035,12 +6220,12 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                     val targetCount = maxOf(selectedCount, prioritizedHeadCount)
                         .coerceIn(0, allRequests.size)
                     val requests = buildList {
+                        addAll(allRequests.take(prioritizedHeadCount))
                         addAll(
                             allRequests
                                 .drop(prioritizedHeadCount)
                                 .take((targetCount - prioritizedHeadCount).coerceAtLeast(0))
                         )
-                        addAll(allRequests.take(prioritizedHeadCount))
                     }.distinctBy { it.url }
                     val missingRequests = requests.filter { ThumbnailBitmapCache.get(it.url, lowRes = false) == null }
                     val thumbsTotal = missingRequests.size
@@ -6163,7 +6348,8 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         tags = libraryRepository.tags(
             textFilter = entrySearch,
             sortField = tagSortField,
-            sortDirection = tagSortDirection
+            sortDirection = tagSortDirection,
+            visibleEntryCodes = entries.map { it.code }
         )
 
         tags.forEach { tag ->
@@ -6295,6 +6481,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
 
         return subscriptionEvents
             .asSequence()
+            .filterNot { event -> event.code in importedEntryCodes }
             .filter { event ->
                 event.matchesCurrentSubscriptionFilters(
                     parsedSearch = parsedSearch,
@@ -6841,6 +7028,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
 
     override fun onCleared() {
         super.onCleared()
+        libraryChangeFlushJob?.cancel()
         seriesNeighborsJob?.cancel()
         selectedEntryRelatedJob?.cancel()
         selectedEntryRelatedCache.clear()

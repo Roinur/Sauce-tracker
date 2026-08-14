@@ -9,7 +9,12 @@ import com.example.saucetracker.TagSortField
 import com.example.saucetracker.data.database.SauceTrackerDatabase
 
 internal interface TagDao {
-    fun counts(textFilter: String, sortField: TagSortField, sortDirection: SortDirection): List<TagCountRow>
+    fun counts(
+        textFilter: String,
+        sortField: TagSortField,
+        sortDirection: SortDirection,
+        visibleEntryCodes: Collection<Int>? = null
+    ): List<TagCountRow>
     fun popular(sortField: TagSortField, sortDirection: SortDirection): List<PopularTagRow>
     fun replacePopular(rows: List<PopularTagSeed>)
     fun route(tagId: Long): TagRouteRef?
@@ -18,8 +23,12 @@ internal interface TagDao {
 }
 
 internal class SqliteTagDao(private val database: SauceTrackerDatabase) : TagDao {
-    override fun counts(textFilter: String, sortField: TagSortField, sortDirection: SortDirection) =
-        database.listTagCounts(textFilter, sortField, sortDirection)
+    override fun counts(
+        textFilter: String,
+        sortField: TagSortField,
+        sortDirection: SortDirection,
+        visibleEntryCodes: Collection<Int>?
+    ) = database.listTagCounts(textFilter, sortField, sortDirection, visibleEntryCodes)
     override fun popular(sortField: TagSortField, sortDirection: SortDirection) =
         database.listPopularTags(sortField, sortDirection)
     override fun replacePopular(rows: List<PopularTagSeed>) = database.replacePopularTags(rows)

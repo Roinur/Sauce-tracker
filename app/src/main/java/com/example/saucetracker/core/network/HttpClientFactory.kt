@@ -4,6 +4,7 @@ import okhttp3.ConnectionPool
 import okhttp3.CookieJar
 import okhttp3.Dispatcher
 import okhttp3.OkHttpClient
+import okhttp3.Cache
 import java.util.concurrent.TimeUnit
 
 internal enum class HttpClientProfile {
@@ -17,8 +18,27 @@ internal enum class HttpClientProfile {
 }
 
 internal object HttpClientFactory {
-    fun create(profile: HttpClientProfile): OkHttpClient {
+    fun create(profile: HttpClientProfile, cache: Cache? = null): OkHttpClient {
         val builder = OkHttpClient.Builder()
+        if (cache != null) {
+            builder.cache(cache)
+            if (profile == HttpClientProfile.THUMBNAIL) {
+                // Gallery cover URLs are content-addressed by media id and safe to retain across
+                // process deaths and app updates even when the CDN omits useful cache headers.
+                builder.addNetworkInterceptor { chain ->
+                    val response = chain.proceed(chain.request())
+                    val isImage = response.header("Content-Type")
+                        ?.startsWith("image/", ignoreCase = true) == true
+                    if (response.isSuccessful && isImage) {
+                        response.newBuilder()
+                            .header("Cache-Control", "public, max-age=2592000")
+                            .build()
+                    } else {
+                        response
+                    }
+                }
+            }
+        }
         when (profile) {
             HttpClientProfile.GALLERY_METADATA -> builder
                 .connectTimeout(15, TimeUnit.SECONDS)

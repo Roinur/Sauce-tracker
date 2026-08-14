@@ -58,6 +58,7 @@ import com.example.saucetracker.feature.settings.*
 import com.example.saucetracker.feature.subscriptions.*
 import com.example.saucetracker.feature.suggestions.*
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import java.util.Locale
 import kotlin.math.max
@@ -319,7 +320,35 @@ internal fun ThumbnailImage(
             ThumbnailBitmapCache.put(thumbnailUrl, fetched, lowRes = preferLowRes)
             PerformanceMetrics.recordThumbnailLoadCompleted()
         }
-        value = (fetched ?: value.first) to true
+        var resolved = fetched ?: value.first
+        if (resolved == null) {
+            // A cold-process startup preload may be fetching the same cover concurrently. Its
+            // memory-cache write is intentionally not global Compose state, so briefly observe
+            // that key before settling on "No preview" instead of requiring a screen remount.
+            var cacheChecks = 0
+            while (resolved == null && cacheChecks < 5) {
+                resolved = ThumbnailBitmapCache.get(thumbnailUrl, lowRes = preferLowRes)
+                    ?: ThumbnailBitmapCache.get(thumbnailUrl, lowRes = !preferLowRes)
+                cacheChecks += 1
+                if (resolved == null) delay(200L)
+            }
+        }
+        if (resolved == null) {
+            delay(600L)
+            resolved = withContext(Dispatchers.IO) {
+                fetchThumbnailBitmap(
+                    context = context.applicationContext,
+                    url = thumbnailUrl,
+                    backupCode = backupCode,
+                    lowRes = preferLowRes
+                )
+            }
+            if (resolved != null) {
+                ThumbnailBitmapCache.put(thumbnailUrl, requireNotNull(resolved), lowRes = preferLowRes)
+                PerformanceMetrics.recordThumbnailLoadCompleted()
+            }
+        }
+        value = resolved to true
     }
 
     val boxModifier = modifier
@@ -354,12 +383,6 @@ internal fun ThumbnailImage(
             CircularProgressIndicator(
                 modifier = Modifier.size(18.dp),
                 strokeWidth = 1.75.dp
-            )
-        } else {
-            Text(
-                text = "No preview",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
     }

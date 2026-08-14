@@ -1650,7 +1650,14 @@ class SauceTrackerDatabase(private val appContext: Context) : SQLiteOpenHelper(
 
     fun listSubscriptionEvents(includeDismissed: Boolean = false): List<SubscriptionEventRow> {
         val rows = mutableListOf<SubscriptionEventRow>()
-        val whereClause = if (includeDismissed) "" else "WHERE COALESCE(e.dismissed, 0) = 0"
+        val whereClause = if (includeDismissed) {
+            ""
+        } else {
+            """
+            WHERE COALESCE(e.dismissed, 0) = 0
+              AND NOT EXISTS (SELECT 1 FROM entries imported WHERE imported.code = e.code)
+            """.trimIndent()
+        }
         readableDatabase.rawQuery(
             """
             SELECT
@@ -1736,6 +1743,7 @@ class SauceTrackerDatabase(private val appContext: Context) : SQLiteOpenHelper(
             JOIN subscriptions s ON s.id = e.subscription_id
             WHERE COALESCE(e.dismissed, 0) = 0
               AND COALESCE(s.notification_dot_enabled, 1) = 1
+              AND NOT EXISTS (SELECT 1 FROM entries imported WHERE imported.code = e.code)
             """.trimIndent(),
             null
         ).use { cursor ->
@@ -1754,6 +1762,7 @@ class SauceTrackerDatabase(private val appContext: Context) : SQLiteOpenHelper(
             JOIN subscriptions s ON s.id = e.subscription_id
             WHERE COALESCE(e.dismissed, 0) = 0
               AND COALESCE(s.notifications_enabled, 1) = 1
+              AND NOT EXISTS (SELECT 1 FROM entries imported WHERE imported.code = e.code)
             """.trimIndent(),
             null
         ).use { cursor ->
@@ -2588,8 +2597,10 @@ class SauceTrackerDatabase(private val appContext: Context) : SQLiteOpenHelper(
     fun listTagCounts(
         textFilter: String,
         sortField: TagSortField,
-        sortDirection: SortDirection
+        sortDirection: SortDirection,
+        visibleEntryCodes: Collection<Int>? = null
     ): List<TagCountRow> {
+        if (visibleEntryCodes != null && visibleEntryCodes.isEmpty()) return emptyList()
         val parsedQuery = parseSearchQuery(textFilter)
         val args = mutableListOf<String>()
         val whereClauses = mutableListOf<String>()
@@ -2622,6 +2633,14 @@ class SauceTrackerDatabase(private val appContext: Context) : SQLiteOpenHelper(
                     args += "%$value%"
                 }
             }
+        }
+
+        visibleEntryCodes?.let { codes ->
+            // Codes originate from the typed local entry query. Embedding the validated integers
+            // avoids SQLite's bind-variable limit for libraries containing more than 999 entries.
+            val safeCodes = codes.asSequence().filter { it > 0 }.distinct().toList()
+            if (safeCodes.isEmpty()) return emptyList()
+            whereClauses += "et.entry_code IN (${safeCodes.joinToString(",")})"
         }
 
         val orderBy = when (sortField) {

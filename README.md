@@ -9,10 +9,14 @@
 </p>
 
 <p align="center">
-  <img alt="Release 1.7" src="https://img.shields.io/badge/release-1.7-8f9cff">
+  <img alt="Release 1.8" src="https://img.shields.io/badge/release-1.8-8f9cff">
   <img alt="Android 8.0+" src="https://img.shields.io/badge/Android-8.0%2B-3ddc84">
   <img alt="Kotlin and Compose" src="https://img.shields.io/badge/Kotlin-Compose-7f52ff">
   <img alt="Local first" src="https://img.shields.io/badge/data-local--first-4c9aff">
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/preview-1.8/dashboard-dark.png" alt="Sauce Tracker dashboard in dark mode" width="460">
 </p>
 
 Sauce Tracker combines a searchable library, an integrated browser, reading history, recommendations, subscriptions, downloads, backups, and interactive tag and entry heatmaps in one on-device app.
@@ -22,42 +26,137 @@ Sauce Tracker combines a searchable library, an integrated browser, reading hist
 
 ## Feature highlights
 
-### Your library, your way
+<table>
+  <tr>
+    <td width="36%">
+      <h3>Your library, your way</h3>
+      Search across codes, titles, metadata, dates, pages, tags, artists, and groups. Filter, sort, rate, pin, track read status, and move directly between related parts, even when the destination is hidden by the current filter.
+    </td>
+    <td align="center">
+      <img src="docs/screenshots/preview-1.8/entries-detail-dark.png" alt="Selected entry in the library" width="240">
+      <img src="docs/screenshots/preview-1.8/tags-dark.png" alt="Tag library" width="240">
+    </td>
+  </tr>
+  <tr>
+    <td width="36%">
+      <h3>Browse and import in context</h3>
+      Open a library entry in the integrated browser, detect duplicates, update metadata, and return without losing the active browser task or the visible library state.
+    </td>
+    <td align="center">
+      <img src="docs/screenshots/preview-1.8/browser-dark.png" alt="Integrated browser in dark mode" width="240">
+      <img src="docs/screenshots/preview-1.8/browser-light.png" alt="Integrated browser in light mode" width="240">
+    </td>
+  </tr>
+  <tr>
+    <td width="36%">
+      <h3>Revisit and discover</h3>
+      Reading history, suggestions, subscriptions, artist pages, related entries, and heatmaps make a large library navigable without sending the collection to a cloud service.
+    </td>
+    <td align="center">
+      <img src="docs/screenshots/preview-1.8/reading-history-light.png" alt="Reading history" width="240">
+      <img src="docs/screenshots/preview-1.8/suggested-entries-dark.png" alt="Suggested entries" width="240">
+    </td>
+  </tr>
+  <tr>
+    <td width="36%">
+      <h3>Read in either direction</h3>
+      Downloaded galleries can be read in horizontal or vertical slideshow modes, with separate privacy behavior for the library, browser, and reader surfaces.
+    </td>
+    <td align="center">
+      <img src="docs/screenshots/preview-1.8/reader-horizontal.png" alt="Horizontal slideshow" width="240">
+      <img src="docs/screenshots/preview-1.8/reader-vertical.png" alt="Vertical slideshow" width="240">
+    </td>
+  </tr>
+</table>
 
-Search across codes, titles, metadata, dates, pages, tags, artists, and groups. Filter, sort, rate, pin, track read status, and move directly between related parts, even when the destination is hidden by the current filter.
+<details>
+  <summary><strong>View all screenshots</strong></summary>
+  <br>
+  <table>
+    <tr>
+      <th>Dashboard, dark</th>
+      <th>Dashboard, light</th>
+      <th>Dashboard, incognito</th>
+    </tr>
+    <tr>
+      <td><img src="docs/screenshots/preview-1.8/dashboard-dark.png" alt="Dashboard in dark mode" width="260"></td>
+      <td><img src="docs/screenshots/preview-1.8/dashboard-light.png" alt="Dashboard in light mode" width="260"></td>
+      <td><img src="docs/screenshots/preview-1.8/dashboard-incognito.png" alt="Dashboard in incognito mode" width="260"></td>
+    </tr>
+    <tr>
+      <th>Selected entry</th>
+      <th>Tags</th>
+      <th>Suggested entries</th>
+    </tr>
+    <tr>
+      <td><img src="docs/screenshots/preview-1.8/entries-detail-dark.png" alt="Selected library entry" width="260"></td>
+      <td><img src="docs/screenshots/preview-1.8/tags-dark.png" alt="Tags" width="260"></td>
+      <td><img src="docs/screenshots/preview-1.8/suggested-entries-dark.png" alt="Suggested entries" width="260"></td>
+    </tr>
+    <tr>
+      <th>Browser, dark</th>
+      <th>Browser, light</th>
+      <th>Reading history</th>
+    </tr>
+    <tr>
+      <td><img src="docs/screenshots/preview-1.8/browser-dark.png" alt="Browser in dark mode" width="260"></td>
+      <td><img src="docs/screenshots/preview-1.8/browser-light.png" alt="Browser in light mode" width="260"></td>
+      <td><img src="docs/screenshots/preview-1.8/reading-history-light.png" alt="Reading history" width="260"></td>
+    </tr>
+    <tr>
+      <th>Duplicate check</th>
+      <th>Entry customization</th>
+      <th>Display</th>
+    </tr>
+    <tr>
+      <td><img src="docs/screenshots/preview-1.8/legacy-browser-duplicate-check.png" alt="Browser duplicate check" width="260"></td>
+      <td><img src="docs/screenshots/preview-1.8/legacy-entry-customization.png" alt="Entry customization" width="260"></td>
+      <td><img src="docs/screenshots/preview-1.8/legacy-display-settings.png" alt="Display settings" width="260"></td>
+    </tr>
+    <tr>
+      <th>Personalization</th>
+      <th>Data</th>
+      <th>Stats and security</th>
+    </tr>
+    <tr>
+      <td><img src="docs/screenshots/preview-1.8/legacy-personalization-settings.png" alt="Personalization settings" width="260"></td>
+      <td><img src="docs/screenshots/preview-1.8/legacy-data-settings.png" alt="Data settings" width="260"></td>
+      <td><img src="docs/screenshots/preview-1.8/legacy-stats-security-settings.png" alt="Stats and security settings" width="260"></td>
+    </tr>
+    <tr>
+      <th>Horizontal slideshow</th>
+      <th>Vertical slideshow</th>
+      <th>Direction picker</th>
+    </tr>
+    <tr>
+      <td><img src="docs/screenshots/preview-1.8/reader-horizontal.png" alt="Horizontal slideshow" width="260"></td>
+      <td><img src="docs/screenshots/preview-1.8/reader-vertical.png" alt="Vertical slideshow" width="260"></td>
+      <td><img src="docs/screenshots/preview-1.8/reader-modes.png" alt="Direction picker" width="260"></td>
+    </tr>
+  </table>
+</details>
 
-### Browse and import in context
+> Screenshots were captured with Sauce Tracker's privacy masking enabled; private search terms, metadata, and thumbnails are obscured.
 
-Open a library entry in the integrated browser, detect duplicates, update metadata, and return without losing the active browser task or the visible library state.
+## What is new in 1.8
 
-### Revisit and discover
+Version 1.8 turns the 1.7 architecture into practical speed, discovery, and reliability improvements for large libraries.
 
-Reading history, suggestions, subscriptions, artist pages, related entries, and heatmaps make a large library navigable without sending the collection to a cloud service.
-
-### Read in either direction
-
-Downloaded galleries can be read in horizontal or vertical slideshow modes, with separate privacy behavior for the library, browser, and reader surfaces.
-
-> Screenshots will be added only after a separate privacy review and explicit approval.
-
-## What is new in 1.7
-
-Version 1.7 is the first release built on the reorganized Sauce Tracker architecture. The rewrite preserves the existing design and feature set while separating app lifecycle, storage, network, browser, library, heatmap, subscription, backup, and media responsibilities.
-
-- Redesigned Selected Entry details with a compact expandable Details control.
-- Added related-library views for Parts, More like this, and Same artist.
-- Parts show matching thumbnail cards for the previous and next entry only.
-- Related-entry navigation can open a target even when the current search, tag, download, or Read/Unread filter would normally hide it.
-- Restored individual related-entry cards without bringing back the oversized section container.
-- Added viewport-bounded Entry Heatmap thumbnails with 10%, 25%, 50%, and 100% display zones; every entry remains available as a lightweight point.
-- Improved heatmap memory behavior for large libraries and moved expensive work away from unrelated screens.
-- Fixed Library restoration after returning from Browser through app switching or the launcher.
-- Preserved the active Browser task when reopening Sauce Tracker from the launcher.
-- Replaced ambiguous API errors with clearer website, HTTP, and network messages plus bounded retry behavior for temporary failures.
-- Added rolling procedural backup history while keeping the thumbnail archive shared.
-- Made subscription notifications open the Subscriptions screen, including the app-lock handoff.
-- Moved release credentials out of tracked project configuration.
-- Added shared media loading, privacy policies, repositories, feature view models, and diagnostics boundaries for safer future development.
+- Added Sauce Finder: choose or share an image and search a local perceptual-hash index for its matching entry and page.
+- Made Sauce Finder incremental, pausable, bounded, and four-way parallel; existing hashes are reused and the real index size is shown in the UI.
+- Added Sauce Finder as the third discovery page beside Suggested and Random entries.
+- Rebuilt Suggested Entries around cached profiles, metadata, candidates, and results so repeat opens are substantially faster.
+- Restored cached Suggested Entry thumbnails after app restarts and made dashboard previews jump to the tapped recommendation.
+- Redesigned Suggested Entries cards, loading state, controls, swipe surfaces, and privacy masking to match the modern dashboard.
+- Added website-provided More like this recommendations to Browser detail pages, with real titles and direct navigation.
+- Fixed Browser comments repeating the author name instead of displaying the message, plus duplicate tag-count labels on affected tags.
+- Tightened Parts, More like this, and Same artist filtering: Parts remain filter-independent while other local recommendations respect Read/Unread context.
+- Refined Tag and Entry Heatmap presentation into the page layout while preserving nodes, layout behavior, pan, zoom, and thumbnail-zone controls.
+- Centralized library-change propagation so imports, deletes, ratings, reads, tags, subscriptions, heatmaps, and suggestions update coherently.
+- Kept thumbnail previews warm across updates and cold starts, and made tag counts reflect the active library filter atomically.
+- Hid already imported galleries from subscription updates and notification counts without removing them from complete backup history.
+- Further split the large Dashboard and Browser hosts into focused feature, parsing, media, duplicate, backup, download, and UI components.
+- Added a privacy-safe GitHub Media Mode with separate data, strong thumbnail masking, theme control, and capture tooling.
 
 See [CHANGELOG.md](CHANGELOG.md) for the complete release summary.
 
@@ -80,9 +179,10 @@ See [CHANGELOG.md](CHANGELOG.md) for the complete release summary.
 
 ### Discovery and visualization
 
-- Personalized suggestions with adjustable weighting and safe fallback behavior.
+- Personalized suggestions with adjustable weighting, cached repeat loads, persistent previews, and safe fallback behavior.
 - Tag Heatmap and precalculated Entry Heatmap with pan, zoom, selection, and bounded thumbnail loading.
 - Parts, More like this, and Same artist navigation from Selected Entry.
+- Local Sauce Finder using a private incremental perceptual-hash index.
 
 ### Privacy, backup, and background work
 
@@ -94,14 +194,14 @@ See [CHANGELOG.md](CHANGELOG.md) for the complete release summary.
 
 ## Download and install
 
-Download `Sauce-Tracker-1.7-release.apk` and its checksum from the [latest GitHub Release](../../releases/latest).
+Download `Sauce-Tracker-1.8-release.apk` and its checksum from the [latest GitHub Release](../../releases/latest).
 
 Android 8.0 (API 26) or newer is required.
 
 To update an existing compatible installation with ADB:
 
 ```powershell
-adb install -r Sauce-Tracker-1.7-release.apk
+adb install -r Sauce-Tracker-1.8-release.apk
 ```
 
 Android may require permission to install apps from the file manager or browser used to open the APK. Back up important library data before replacing an older or differently signed build.
@@ -154,14 +254,14 @@ The package root is `com.example.saucetracker`. The modular layout keeps feature
 
 - Library data, settings, heatmap caches, and reading history are stored locally.
 - Network access is used when opening the integrated browser, fetching gallery metadata, refreshing subscriptions, or downloading media.
-- Website availability and response formats are outside the project's control; 1.7 distinguishes temporary website failures from device-network problems and permanent HTTP responses.
+- Website availability and response formats are outside the project's control; Sauce Tracker distinguishes temporary website failures from device-network problems and permanent HTTP responses.
 
 ## Release integrity
 
 Official releases should include:
 
-- `Sauce-Tracker-1.7-release.apk`
-- `Sauce-Tracker-1.7-release.apk.sha256`
+- `Sauce-Tracker-1.8-release.apk`
+- `Sauce-Tracker-1.8-release.apk.sha256`
 - release notes matching [CHANGELOG.md](CHANGELOG.md)
 
 Verify the checksum before sideloading when the APK was downloaded through a third party.

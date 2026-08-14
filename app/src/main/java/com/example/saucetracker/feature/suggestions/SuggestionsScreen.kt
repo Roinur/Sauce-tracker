@@ -324,16 +324,32 @@ internal fun SuggestedRandomPreviewPanel(
     onOpenSuggestions: () -> Unit,
     onSuggestedEntryClick: (Int) -> Unit,
     onRandomEntryClick: (EntryRow) -> Unit,
+    sauceFinderState: com.example.saucetracker.feature.saucefinder.SauceFinderUiState,
+    onPrepareSauceFinder: () -> Unit,
+    onChooseSauceImage: () -> Unit,
+    onBuildSauceIndex: () -> Unit,
+    onPauseSauceIndex: () -> Unit,
+    onOpenSauceMatch: (Int) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val cardShape = RoundedCornerShape(18.dp)
     val headerShape = RoundedCornerShape(14.dp)
-    val pagerState = rememberPagerState(initialPage = 0, pageCount = { 2 })
+    val pagerState = rememberPagerState(initialPage = 0, pageCount = { 3 })
     val randomWidgetInteraction = remember { MutableInteractionSource() }
     val suggestedWidgetInteraction = remember { MutableInteractionSource() }
     val randomWidgetPressed by randomWidgetInteraction.collectIsPressedAsState()
     val suggestedWidgetPressed by suggestedWidgetInteraction.collectIsPressedAsState()
-    val widgetPressed = if (pagerState.currentPage == 0) randomWidgetPressed else suggestedWidgetPressed
+    val widgetPressed = when (pagerState.currentPage) {
+        0 -> randomWidgetPressed
+        1 -> suggestedWidgetPressed
+        else -> false
+    }
+    LaunchedEffect(sauceFinderState.openRequestNonce) {
+        if (sauceFinderState.openRequestNonce > 0L) pagerState.animateScrollToPage(2)
+    }
+    LaunchedEffect(pagerState.currentPage) {
+        if (pagerState.currentPage == 2) onPrepareSauceFinder()
+    }
     val widgetScale by androidx.compose.animation.core.animateFloatAsState(
         targetValue = if (widgetPressed) 0.968f else 1f,
         animationSpec = androidx.compose.animation.core.tween(durationMillis = 100, easing = FastOutSlowInEasing),
@@ -404,7 +420,7 @@ internal fun SuggestedRandomPreviewPanel(
                             interactionSource = randomWidgetInteraction
                         )
                     }
-                } else {
+                } else if (page == 1) {
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
@@ -428,6 +444,15 @@ internal fun SuggestedRandomPreviewPanel(
                             interactionSource = suggestedWidgetInteraction
                         )
                     }
+                } else {
+                    com.example.saucetracker.feature.saucefinder.SauceFinderPreviewPage(
+                        state = sauceFinderState,
+                        incognitoModeEnabled = incognitoModeEnabled,
+                        onChooseImage = onChooseSauceImage,
+                        onBuildIndex = onBuildSauceIndex,
+                        onPauseIndex = onPauseSauceIndex,
+                        onOpenMatch = onOpenSauceMatch
+                    )
                 }
             }
             Row(
@@ -435,7 +460,7 @@ internal fun SuggestedRandomPreviewPanel(
                 horizontalArrangement = Arrangement.Center,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                repeat(2) { index ->
+                repeat(3) { index ->
                     val selected = pagerState.currentPage == index
                     val indicatorWidth by androidx.compose.animation.core.animateDpAsState(
                         targetValue = if (selected) 18.dp else 7.dp,

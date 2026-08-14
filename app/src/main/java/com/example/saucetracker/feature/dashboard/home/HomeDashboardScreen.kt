@@ -18,6 +18,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.collectAsState
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.ui.Modifier
@@ -87,6 +90,10 @@ internal fun ModernHomeDashboard(
         vm.entries.shuffled().take(8)
     }
     var randomPreviewInitialIndex by remember { mutableStateOf<Int?>(null) }
+    val sauceFinderState by vm.sauceFinderState.collectAsState()
+    val sauceImagePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        uri?.let(vm::findSauce)
+    }
     val playDashboardEntrance = remember { vm.consumeDashboardEntrance() }
     var dashboardVisible by remember { mutableStateOf(!playDashboardEntrance) }
     LaunchedEffect(playDashboardEntrance) {
@@ -174,6 +181,12 @@ internal fun ModernHomeDashboard(
                     val index = randomPreview.indexOfFirst { it.code == entry.code }.coerceAtLeast(0)
                     randomPreviewInitialIndex = index
                 },
+                sauceFinderState = sauceFinderState,
+                onPrepareSauceFinder = vm::prepareSauceFinderLocalIndex,
+                onChooseSauceImage = { sauceImagePicker.launch("image/*") },
+                onBuildSauceIndex = vm::buildFullSauceFinderIndex,
+                onPauseSauceIndex = vm::pauseFullSauceFinderIndex,
+                onOpenSauceMatch = onOpenRandomEntry,
                 modifier = Modifier
                     .weight(2f)
                     .height(184.dp)

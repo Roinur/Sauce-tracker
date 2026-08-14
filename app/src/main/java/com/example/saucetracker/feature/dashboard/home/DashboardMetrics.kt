@@ -258,7 +258,7 @@ internal fun SubscriptionHeatmapPreviewPanel(
                             Text("Subscriptions", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
                             Text(updateCount.toString(), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Black)
                             Text(
-                                "$subscriptionCount active • hold list",
+                                "$subscriptionCount active",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 maxLines = 2,

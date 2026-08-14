@@ -59,7 +59,10 @@ $installable = $Mode -in @('fast', 'performance', 'verify')
 function Invoke-GradleBuild {
     param([bool]$UseOffline)
 
-    $daemonMode = if ($Mode -in @('fast', 'performance')) { '--daemon' } else { '--no-daemon' }
+    # A detached daemon can keep cmd.exe alive after Gradle has already written
+    # BUILD SUCCESSFUL, which prevents signature verification and adb install.
+    # The warm build cache still makes small changes fast without that fragile hand-off.
+    $daemonMode = '--no-daemon'
     $arguments = @(
         $daemonMode,
         '--build-cache'

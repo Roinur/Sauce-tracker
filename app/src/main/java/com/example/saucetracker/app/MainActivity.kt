@@ -25,7 +25,8 @@ class MainActivity : ComponentActivity() {
         externalIntentRouter = ExternalIntentRouter(
             context = this,
             importBrowserInput = viewModel::importFromBrowserClipboard,
-            queueSharedText = viewModel::queueIncomingShareText
+            queueSharedText = viewModel::queueIncomingShareText,
+            queueSharedImage = viewModel::queueIncomingShareImage
         )
         lifecycleObserver = AppLifecycleObserver(
             activity = this,

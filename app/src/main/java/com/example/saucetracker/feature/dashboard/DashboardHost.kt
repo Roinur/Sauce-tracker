@@ -800,6 +800,7 @@ internal fun DashboardContent(
     val rootListState = rememberLazyListState()
     val tagsListState = rememberLazyListState()
     val suggestedListState = rememberLazyListState()
+    var pendingSuggestedScrollCode by remember { mutableStateOf<Int?>(null) }
     val creatorsListState = rememberLazyListState()
     val subscriptionsListState = rememberLazyListState()
     val homeSurfaceScrollAnchors = remember { mutableStateMapOf<HomeSurface, Pair<Int, Int>>() }
@@ -1317,6 +1318,16 @@ internal fun DashboardContent(
         )
     }
 
+    LaunchedEffect(homeSurface, pendingSuggestedScrollCode, vm.suggestedEntries) {
+        val targetCode = pendingSuggestedScrollCode ?: return@LaunchedEffect
+        if (homeSurface != HomeSurface.SUGGESTED) return@LaunchedEffect
+        val targetIndex = vm.suggestedEntries.indexOfFirst { it.code == targetCode }
+        if (targetIndex < 0) return@LaunchedEffect
+        delay(48)
+        suggestedListState.animateScrollToItem(targetIndex)
+        pendingSuggestedScrollCode = null
+    }
+
     if (showPersonalizationDialog) {
         AnimatedOverlayCard(
             onDismissRequest = { showPersonalizationDialog = false },
@@ -1428,6 +1439,29 @@ internal fun DashboardContent(
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text("Artists / Groups: ${describeCreatorSort(vm.defaultCreatorSortField, vm.defaultCreatorSortDirection)}")
+                    }
+                    HorizontalDivider(
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.75f),
+                        thickness = 1.dp
+                    )
+                    Text(
+                        text = "Dashboard order",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        text = vm.homeSectionOrderSummary(),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Button(
+                        onClick = {
+                            showPersonalizationDialog = false
+                            showCustomizeHomeDialog = true
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Change dashboard order")
                     }
             }
         }
@@ -5964,10 +5998,11 @@ internal fun DashboardContent(
                             onOpenEntry = { code ->
                                 heatmapOverviewCollapsed = true
                                 if (vm.suggestedEntries.any { it.code == code }) {
+                                    pendingSuggestedScrollCode = code
                                     if (vm.suggestedEntriesCollapsed) {
                                         vm.toggleSuggestedEntriesCollapsed()
                                     }
-                                    switchHomeSurface(HomeSurface.SUGGESTED)
+                                    switchHomeSurface(HomeSurface.SUGGESTED, restoreScroll = false)
                                 } else {
                                     vm.expandEntriesSection()
                                     switchHomeSurface(HomeSurface.ENTRIES, restoreScroll = false)
