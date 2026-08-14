@@ -6,7 +6,7 @@ plugins {
 }
 
 android {
-    namespace = "com.example.saucetracker"
+    namespace = "com.roinur.saucetracker"
     compileSdk = 34
 
     val signingProperties = Properties().apply {
@@ -33,7 +33,7 @@ android {
     ).all { !it.isNullOrBlank() }
 
     defaultConfig {
-        applicationId = "com.example.saucetracker"
+        applicationId = "com.roinur.saucetracker"
         minSdk = 26
         targetSdk = 34
         versionCode = 12

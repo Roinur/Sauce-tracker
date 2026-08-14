@@ -30,14 +30,14 @@ if (-not $Device) {
 $activities = (& $adb -s $Device shell dumpsys activity activities) -join "`n"
 $topMatch = [regex]::Match(
     $activities,
-    'topResumedActivity=.*com\.example\.saucetracker\.rewrite/[^\s}]+\s+t(\d+)'
+    'topResumedActivity=.*com\.roinur\.saucetracker\.rewrite/[^\s}]+\s+t(\d+)'
 )
 if (-not $topMatch.Success) {
     throw 'GitHub media mode is not the foreground activity. Capture refused.'
 }
 $taskId = [regex]::Escape($topMatch.Groups[1].Value)
 $githubLauncherInForegroundTask =
-    $activities -match "com\.example\.saucetracker\.rewrite/com\.example\.saucetracker\.app\.GitHubMediaLauncher\s+t$taskId}"
+    $activities -match "com\.roinur\.saucetracker\.rewrite/com\.roinur\.saucetracker\.app\.GitHubMediaLauncher\s+t$taskId}"
 if (-not $githubLauncherInForegroundTask) {
     throw 'The foreground Sauce Tracker task was not launched in GitHub media mode. Capture refused.'
 }

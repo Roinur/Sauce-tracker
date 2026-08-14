@@ -25,7 +25,7 @@ if (-not $Device) {
 $rotationBefore = (& $adb -s $Device shell settings get system accelerometer_rotation).Trim()
 try {
     & $adb -s $Device shell am start -S `
-        -n 'com.example.saucetracker.rewrite/com.example.saucetracker.app.GitHubMediaLauncher' `
+        -n 'com.roinur.saucetracker.rewrite/com.roinur.saucetracker.app.GitHubMediaLauncher' `
         --es github_media_config_b64 $payload
     if ($LASTEXITCODE -ne 0) { throw 'Could not open the app in GitHub media mode.' }
 } finally {

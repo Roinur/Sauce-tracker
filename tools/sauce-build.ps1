@@ -204,7 +204,7 @@ if ($installable -and -not $NoInstall) {
             try {
                 # Android's monkey command prints normal launch diagnostics to stderr.
                 $ErrorActionPreference = 'Continue'
-                & $adb -s $serial shell monkey -p com.example.saucetracker.rewrite -c android.intent.category.LAUNCHER 1 2>&1 | Out-Null
+                & $adb -s $serial shell monkey -p com.roinur.saucetracker.rewrite -c android.intent.category.LAUNCHER 1 2>&1 | Out-Null
                 $launchExitCode = $LASTEXITCODE
             } finally {
                 $ErrorActionPreference = $previousErrorAction

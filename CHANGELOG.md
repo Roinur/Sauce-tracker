@@ -41,9 +41,15 @@ All notable Sauce Tracker release changes are documented here.
 - Made tag counts update atomically against the active library filter instead of briefly showing global totals.
 - Hid already imported galleries from subscription feeds, badges, and notification totals while retaining complete event history in backup/export paths.
 - Rebalanced dashboard discovery controls and kept subscription counts consistent with other dashboard cards.
+- Added persistent Personalization controls for the actual modern dashboard pagers: Random, Suggested, and Sauce Finder can be reordered independently from Subscriptions, Heatmap, and History.
+- Moved entry-cycle, adaptive Home/Dashboard order, Browser, and default-sort controls directly into the Personalization card, removing its intermediate overlay and duplicate order setting.
 
 ### Architecture, privacy, and development
 
+- Changed the production Android package identity to `com.roinur.saucetracker`; earlier package installs remain separate so migration uses Sauce Tracker export/import.
+- Added optional, direction-aware Gallery Slideshow navigation: Volume Up moves right in horizontal mode and up in vertical mode; Volume Down moves left or down.
+- Made vertical volume-button steps center ordinary pages based on their measured height while keeping the first page top-aligned and the last page bottom-aligned.
+- Made a slideshow volume-button action enter immersive mode and consume the hardware event so media volume is not changed while the option is enabled.
 - Continued the architecture cleanup by extracting Dashboard domain models, interactions, parsing, entry lists, tags, creators, subscriptions, suggestions, heatmap UI, backup assembly, and download control.
 - Split Browser parsing, duplicate detection, detail UI, gallery-list UI, and media components out of the Browser activity.
 - Removed an embedded Desktop Bridge TLS asset and kept generated bridge credentials outside tracked source.

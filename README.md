@@ -155,8 +155,12 @@ Version 1.8 turns the 1.7 architecture into practical speed, discovery, and reli
 - Centralized library-change propagation so imports, deletes, ratings, reads, tags, subscriptions, heatmaps, and suggestions update coherently.
 - Kept thumbnail previews warm across updates and cold starts, and made tag counts reflect the active library filter atomically.
 - Hid already imported galleries from subscription updates and notification counts without removing them from complete backup history.
+- Added working dashboard page ordering in Personalization for Random, Suggested, and Sauce Finder, plus Subscriptions, Heatmap, and History.
+- Put entry-cycle, adaptive Home/Dashboard order, Browser, and default-sort controls directly inside the Personalization card, removing the duplicate order setting and intermediate overlay.
 - Further split the large Dashboard and Browser hosts into focused feature, parsing, media, duplicate, backup, download, and UI components.
 - Added a privacy-safe GitHub Media Mode with separate data, strong thumbnail masking, theme control, and capture tooling.
+- Added optional, direction-aware volume-button page navigation in Gallery Slideshow; vertical steps center middle pages while anchoring the first and last pages to their respective edges.
+- Moved the production Android identity to `com.roinur.saucetracker`, with full library and settings migration through export/import.
 
 See [CHANGELOG.md](CHANGELOG.md) for the complete release summary.
 
@@ -198,7 +202,9 @@ Download `Sauce-Tracker-1.8-release.apk` and its checksum from the [latest GitHu
 
 Android 8.0 (API 26) or newer is required.
 
-To update an existing compatible installation with ADB:
+Version 1.8 uses the new `com.roinur.saucetracker` Android identity. Android therefore installs it beside builds using the former package rather than updating them in place. Create a fresh export in the former app, import it into the new app, reselect Android document folders, and verify the result before uninstalling the former app.
+
+To install with ADB:
 
 ```powershell
 adb install -r Sauce-Tracker-1.8-release.apk
@@ -248,7 +254,7 @@ data/            database, DAO, repositories, backup, downloads, and remote pars
 feature/         browser, dashboard, library, heatmap, slideshow, settings, and discovery
 ```
 
-The package root is `com.example.saucetracker`. The modular layout keeps feature-specific state and expensive work scoped to the screen that owns it.
+The package root is `com.roinur.saucetracker`. The modular layout keeps feature-specific state and expensive work scoped to the screen that owns it.
 
 ## Data and network behavior
 
