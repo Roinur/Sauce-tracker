@@ -21,24 +21,21 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.LocalMinimumInteractiveComponentEnforcement
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -48,11 +45,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
-import androidx.compose.ui.geometry.CornerRadius
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.hapticfeedback.HapticFeedback
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
@@ -68,7 +61,7 @@ import java.util.Locale
 
 @Composable
 @OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
-internal fun DashboardSuggestionsSection(
+internal fun LegacyDashboardSuggestionsSection(
     vm: DashboardViewModel,
     listState: LazyListState,
     maxHeight: Dp,
@@ -83,174 +76,103 @@ internal fun DashboardSuggestionsSection(
     onPressStart: () -> Unit,
     runOnPressWhen: () -> Boolean
 ) {
-    if (vm.legacyHomeUi) {
-        LegacyDashboardSuggestionsSection(
-            vm = vm,
-            listState = listState,
-            maxHeight = maxHeight,
-            preferLowRes = preferLowRes,
-            suggestedDuplicateComparisonState = suggestedDuplicateComparisonState,
-            entryItemYByCode = entryItemYByCode,
-            entryItemWidthByCode = entryItemWidthByCode,
-            entryItemHeightByCode = entryItemHeightByCode,
-            haptic = haptic,
-            onShowWeights = onShowWeights,
-            onCollapseHeatmap = onCollapseHeatmap,
-            onPressStart = onPressStart,
-            runOnPressWhen = runOnPressWhen
-        )
-        return
-    }
-
-    LaunchedEffect(Unit) {
-        if (vm.suggestedEntriesCollapsed) {
-            vm.toggleSuggestedEntriesCollapsed()
-        }
-    }
-
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 4.dp, vertical = 4.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
+                Card {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(2.dp)
-            ) {
-                Text(
-                    "Suggested entries",
-                    style = MaterialTheme.typography.headlineSmall,
-                    fontWeight = FontWeight.Black
-                )
-                Text(
-                    text = when {
-                        vm.suggestedEntries.isNotEmpty() -> "${vm.suggestedEntries.size} recommendations"
-                        vm.suggestedEntriesLoading -> "Building recommendations"
-                        else -> "Based on your local library"
-                    },
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
             Row(
-                horizontalArrangement = Arrangement.spacedBy(0.dp),
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                TextButton(onClick = onShowWeights) {
+                Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        "Tune",
-                        style = MaterialTheme.typography.labelLarge,
+                        "Suggested entries",
+                        style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.SemiBold
                     )
                 }
-                TextButton(onClick = vm::refreshSuggestedEntriesForCurrentSession) {
-                    Text(
-                        "Refresh",
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                }
-            }
-        }
-
-        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            SuggestionMode.entries.forEach { mode ->
-                FilterChip(
-                    selected = vm.suggestionMode == mode,
-                    onClick = { vm.updateSuggestionMode(mode) },
-                    label = {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    TextButton(onClick = { onShowWeights() }) {
                         Text(
-                            text = mode.label,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            textAlign = TextAlign.Center,
-                            modifier = Modifier.fillMaxWidth()
+                            "Weights",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold
                         )
-                    },
-                    shape = RoundedCornerShape(14.dp),
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
-                        selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
-                    ),
-                    modifier = Modifier.weight(1f)
-                )
+                    }
+                    TextButton(onClick = { vm.refreshSuggestedEntriesForCurrentSession() }) {
+                        Text(
+                            "Refresh",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                    TextButton(
+                        onClick = {
+                            onCollapseHeatmap()
+                            vm.toggleSuggestedEntriesCollapsed()
+                        }
+                    ) {
+                        Text(
+                            if (vm.suggestedEntriesCollapsed) "Expand" else "Collapse",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                }
             }
-        }
-
-        vm.suggestedEntriesInfoMessage?.let { info ->
-            Text(
-                text = info,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-
-        if (vm.incognitoModeEnabled) {
-            Text(
-                text = "Suggested entries are hidden while incognito mode is enabled.",
-                modifier = Modifier.privacyObfuscate(
-                    enabled = true,
-                    overlayColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = INCOGNITO_OVERLAY_ALPHA)
-                ),
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        } else {
-            if (vm.suggestedEntriesLoading) {
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    LinearProgressIndicator(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(999.dp))
-                    )
+    
+            if (!vm.suggestedEntriesCollapsed) {
+                Text(
+                    text = "Based on your library (local)",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                vm.suggestedEntriesInfoMessage?.let { info ->
                     Text(
-                        text = if (vm.suggestedEntries.isEmpty()) {
-                            "Building recommendations from your library..."
-                        } else {
-                            "Updating recommendations. Your current list remains available."
-                        },
+                        text = info,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-            }
-
-            if (vm.suggestedEntries.isEmpty() && !vm.suggestedEntriesLoading) {
-                Column(
-                    modifier = Modifier.padding(vertical = 28.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
+                if (vm.incognitoModeEnabled) {
                     Text(
-                        text = "Nothing to recommend yet",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.fillMaxWidth()
+                        text = "Suggested entries are hidden while incognito mode is enabled.",
+                        modifier = Modifier.privacyObfuscate(
+                            enabled = true,
+                            overlayColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = INCOGNITO_OVERLAY_ALPHA)
+                        ),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    Text(
-                        text = "Read or rate a few entries, then refresh to build recommendations.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    TextButton(onClick = vm::refreshSuggestedEntriesForCurrentSession) {
-                        Text("Refresh suggestions")
+                } else {
+                    if (vm.suggestedEntriesLoading) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp),
+                                strokeWidth = 2.dp
+                            )
+                            Text(
+                                "Refreshing suggestions...",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
-                }
-            } else if (vm.suggestedEntries.isNotEmpty()) {
+    
+                    if (vm.suggestedEntries.isEmpty() && !vm.suggestedEntriesLoading) {
+                        Text(
+                            text = "No suggestions yet. Read/rate entries (0 is neutral), then refresh.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    } else if (vm.suggestedEntries.isNotEmpty()) {
                         LazyColumn(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -267,41 +189,21 @@ internal fun DashboardSuggestionsSection(
                                 val suggestionRead = vm.entryReadForCode(suggestion.code)
                                 val suggestionInteraction = remember { MutableInteractionSource() }
                                 var suggestedHoldAction by remember(suggestion.code) { mutableStateOf<SuggestedDragAction?>(null) }
-                                val suggestionCardShape = RoundedCornerShape(18.dp)
-                                val suggestionOutlineColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.22f)
                                 EntrySwipeDismissContainer(
                                     code = suggestion.code,
                                     isPinned = suggestionPinned,
                                     isRead = suggestionRead,
                                     incognitoModeEnabled = vm.incognitoModeEnabled,
                                     onTogglePinned = vm::quickToggleSuggestedPinned,
-                                    onToggleRead = vm::quickToggleSuggestedRead,
-                                    backgroundShape = suggestionCardShape
+                                    onToggleRead = vm::quickToggleSuggestedRead
                                 ) {
                                     Card(
                                         colors = CardDefaults.cardColors(
                                             containerColor = MaterialTheme.colorScheme.surfaceContainerLow
                                         ),
                                         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
-                                        shape = suggestionCardShape,
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .drawWithContent {
-                                                drawContent()
-                                                val strokeWidth = 0.5.dp.toPx()
-                                                val halfStroke = strokeWidth / 2f
-                                                val cornerRadius = 18.dp.toPx() - halfStroke
-                                                drawRoundRect(
-                                                    color = suggestionOutlineColor,
-                                                    topLeft = Offset(halfStroke, halfStroke),
-                                                    size = Size(
-                                                        width = size.width - strokeWidth,
-                                                        height = size.height - strokeWidth
-                                                    ),
-                                                    cornerRadius = CornerRadius(cornerRadius, cornerRadius),
-                                                    style = Stroke(width = strokeWidth)
-                                                )
-                                            }
                                             .heldSelectionMask(
                                                 enabled = suggestedHoldAction != null,
                                                 overlayColor = MaterialTheme.colorScheme.surfaceVariant
@@ -369,9 +271,14 @@ internal fun DashboardSuggestionsSection(
                                                 tint = MaterialTheme.colorScheme.primary,
                                                 modifier = Modifier.matchParentSize()
                                             )
+                                            LoadingShimmerOverlay(
+                                                active = suggestion.duplicateHint != null,
+                                                tint = UNREAD_STATE_COLOR,
+                                                modifier = Modifier.matchParentSize()
+                                            )
                                             Column(
-                                                modifier = Modifier.padding(12.dp),
-                                                verticalArrangement = Arrangement.spacedBy(10.dp)
+                                                modifier = Modifier.padding(10.dp),
+                                                verticalArrangement = Arrangement.spacedBy(6.dp)
                                             ) {
                                                 Row(
                                                     modifier = Modifier.fillMaxWidth(),
@@ -386,68 +293,35 @@ internal fun DashboardSuggestionsSection(
                                                             obscure = vm.incognitoModeEnabled,
                                                             preferLowRes = preferLowRes,
                                                             modifier = Modifier
-                                                                .width(112.dp)
-                                                                .height(148.dp)
+                                                                .width(108.dp)
+                                                                .height(72.dp)
                                                         )
                                                     }
                                                     Column(
-                                                        modifier = Modifier
-                                                            .weight(1f)
-                                                            .privacyObfuscate(
-                                                                enabled = vm.incognitoModeEnabled,
-                                                                overlayColor = MaterialTheme.colorScheme.surfaceVariant.copy(
-                                                                    alpha = INCOGNITO_OVERLAY_ALPHA
-                                                                ),
-                                                                blurRadius = 9.dp,
-                                                                cornerRadius = 8.dp
-                                                            ),
-                                                        verticalArrangement = Arrangement.spacedBy(5.dp)
+                                                        modifier = Modifier.weight(1f),
+                                                        verticalArrangement = Arrangement.spacedBy(2.dp)
                                                     ) {
                                                         Text(
-                                                            text = "#${suggestion.code}",
-                                                            style = MaterialTheme.typography.labelMedium,
-                                                            color = MaterialTheme.colorScheme.primary,
-                                                            fontWeight = FontWeight.SemiBold
-                                                        )
-                                                        Text(
-                                                            text = suggestion.title,
-                                                            style = MaterialTheme.typography.titleSmall,
-                                                            fontWeight = FontWeight.SemiBold,
+                                                            text = "#${suggestion.code} â€¢ ${suggestion.title}",
+                                                            style = MaterialTheme.typography.bodyMedium,
                                                             maxLines = 2,
                                                             overflow = TextOverflow.Ellipsis
                                                         )
                                                         Text(
-                                                            text = "${suggestion.numPages} pages  •  ${suggestion.uploadDate.ifBlank { "Unknown date" }}",
+                                                            text = "Pages: ${suggestion.numPages} â€¢ Uploaded: ${suggestion.uploadDate.ifBlank { "-" }}",
                                                             style = MaterialTheme.typography.bodySmall,
                                                             color = MaterialTheme.colorScheme.onSurfaceVariant
                                                         )
                                                         Text(
-                                                            text = "Match score ${"%.2f".format(Locale.US, suggestion.score)}",
-                                                            style = MaterialTheme.typography.labelMedium,
+                                                            text = "Score: ${"%.2f".format(Locale.US, suggestion.score)}",
+                                                            style = MaterialTheme.typography.bodySmall,
                                                             color = MaterialTheme.colorScheme.primary
                                                         )
-                                                        if (suggestion.duplicateHint == null && suggestion.whySuggestedReason.isNotBlank()) {
-                                                            Text(
-                                                                text = suggestion.whySuggestedReason,
-                                                                style = MaterialTheme.typography.bodySmall,
-                                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                                maxLines = 3,
-                                                                overflow = TextOverflow.Ellipsis
-                                                            )
-                                                        }
                                                     }
                                                 }
     
                                                 if (suggestion.topTags.isNotEmpty()) {
-                                                    Row(
-                                                        modifier = Modifier.privacyObfuscate(
-                                                            enabled = vm.incognitoModeEnabled,
-                                                            overlayColor = MaterialTheme.colorScheme.surfaceVariant.copy(
-                                                                alpha = INCOGNITO_OVERLAY_ALPHA
-                                                            )
-                                                        ),
-                                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                                    ) {
+                                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                                         suggestion.topTags.forEach { tag ->
                                                             Text(
                                                                 text = tag,
@@ -503,7 +377,7 @@ internal fun DashboardSuggestionsSection(
                                                                 suggestion.duplicateHint?.let { hint ->
                                                                     Spacer(modifier = Modifier.weight(1f))
                                                                     ImmediateActionText(
-                                                                        label = "Possible duplicate",
+                                                                        label = "Duplicate? #${hint.matchedCode}",
                                                                         onAction = {
                                                                             suggestedDuplicateComparisonState.value =
                                                                                 SuggestedDuplicateComparisonState(
@@ -521,20 +395,39 @@ internal fun DashboardSuggestionsSection(
                                                                         modifier = Modifier.heightIn(min = 0.dp)
                                                                     )
                                                                 }
+                                                                if (suggestion.duplicateHint == null && suggestion.whySuggestedReason.isNotBlank()) {
+                                                                    Spacer(modifier = Modifier.weight(1f))
+                                                                    Text(
+                                                                        text = "Why suggested?",
+                                                                        style = MaterialTheme.typography.labelSmall,
+                                                                        color = READ_STATE_COLOR,
+                                                                        fontWeight = FontWeight.SemiBold,
+                                                                        maxLines = 1,
+                                                                        overflow = TextOverflow.Ellipsis
+                                                                    )
+                                                                }
                                                             }
                                                             suggestion.duplicateHint?.let { hint ->
                                                                 Text(
                                                                     text = hint.reason,
-                                                                    modifier = Modifier
-                                                                        .fillMaxWidth()
-                                                                        .privacyObfuscate(
-                                                                            enabled = vm.incognitoModeEnabled,
-                                                                            overlayColor = MaterialTheme.colorScheme.surfaceVariant.copy(
-                                                                                alpha = INCOGNITO_OVERLAY_ALPHA
-                                                                            )
-                                                                        ),
                                                                     style = MaterialTheme.typography.labelSmall,
                                                                     color = UNREAD_STATE_COLOR.copy(alpha = 0.88f),
+                                                                    modifier = Modifier
+                                                                        .fillMaxWidth()
+                                                                        .padding(top = 0.dp),
+                                                                    maxLines = 2,
+                                                                    overflow = TextOverflow.Ellipsis,
+                                                                    textAlign = TextAlign.End
+                                                                )
+                                                            }
+                                                            if (suggestion.duplicateHint == null && suggestion.whySuggestedReason.isNotBlank()) {
+                                                                Text(
+                                                                    text = suggestion.whySuggestedReason,
+                                                                    style = MaterialTheme.typography.labelSmall,
+                                                                    color = READ_STATE_COLOR.copy(alpha = 0.92f),
+                                                                    modifier = Modifier
+                                                                        .fillMaxWidth()
+                                                                        .padding(top = 0.dp),
                                                                     maxLines = 2,
                                                                     overflow = TextOverflow.Ellipsis,
                                                                     textAlign = TextAlign.End
@@ -556,7 +449,11 @@ internal fun DashboardSuggestionsSection(
                                 }
                             }
                         }
+                    }
                 }
             }
+        }
     }
 }
+
+

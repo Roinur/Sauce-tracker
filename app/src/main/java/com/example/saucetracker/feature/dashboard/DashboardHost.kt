@@ -6163,6 +6163,7 @@ internal fun DashboardContent(
                                 entryItemHeightByCode = entryItemHeightByCode,
                                 haptic = haptic,
                                 onShowWeights = { showSuggestedWeightsDialog = true },
+                                onCollapseHeatmap = { heatmapOverviewCollapsed = true },
                                 onPressStart = ::stopActiveScrolls,
                                 runOnPressWhen = isAnyListScrolling
                             )

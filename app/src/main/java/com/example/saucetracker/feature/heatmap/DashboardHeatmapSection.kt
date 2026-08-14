@@ -89,53 +89,53 @@ internal fun DashboardHeatmapSection(
         return
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 4.dp, vertical = 4.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
+    androidx.compose.material3.Card {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            Text(
-                text = "Heatmap Overview",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold
-            )
             Row(
+                modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                HeatmapDisplayModeActions(
-                    displayMode = displayMode,
-                    onDisplayModeChange = onDisplayModeChange,
-                    onPressStart = onPressStart,
-                    runOnPressWhen = runOnPressWhen
+                Text(
+                    text = "Heatmap Overview",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold
                 )
-                ImmediateActionText(
-                    label = if (legacyCollapsed) "Expand" else "Collapse",
-                    onAction = { onLegacyCollapsedChange(!legacyCollapsed) },
-                    onPressStart = onPressStart,
-                    runOnPressWhen = runOnPressWhen,
-                    textStyle = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Medium
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    HeatmapDisplayModeActions(
+                        displayMode = displayMode,
+                        onDisplayModeChange = onDisplayModeChange,
+                        onPressStart = onPressStart,
+                        runOnPressWhen = runOnPressWhen
+                    )
+                    ImmediateActionText(
+                        label = if (legacyCollapsed) "Expand" else "Collapse",
+                        onAction = { onLegacyCollapsedChange(!legacyCollapsed) },
+                        onPressStart = onPressStart,
+                        runOnPressWhen = runOnPressWhen,
+                        textStyle = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+            }
+
+            if (!legacyCollapsed) {
+                DashboardHeatmapCanvas(
+                    vm = vm,
+                    snapshot = snapshot,
+                    displayMode = displayMode,
+                    screenHeightDp = screenHeightDp,
+                    onTagSelected = onTagSelected,
+                    onEntrySelected = onEntrySelected,
+                    entryLayoutSessionCache = entryLayoutSessionCache
                 )
             }
-        }
-
-        if (!legacyCollapsed) {
-            DashboardHeatmapCanvas(
-                vm = vm,
-                snapshot = snapshot,
-                displayMode = displayMode,
-                screenHeightDp = screenHeightDp,
-                onTagSelected = onTagSelected,
-                onEntrySelected = onEntrySelected,
-                entryLayoutSessionCache = entryLayoutSessionCache
-            )
         }
     }
 }
