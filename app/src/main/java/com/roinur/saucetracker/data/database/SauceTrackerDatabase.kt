@@ -2,6 +2,7 @@ package com.roinur.saucetracker.data.database
 
 import com.roinur.saucetracker.core.media.*
 import com.roinur.saucetracker.core.diagnostics.GitHubMediaSession
+import com.roinur.saucetracker.core.time.UserCalendar
 
 import android.content.ContentValues
 import android.content.Context
@@ -469,7 +470,10 @@ class SauceTrackerDatabase(private val appContext: Context) : SQLiteOpenHelper(
     }
 
     private fun dayKeyFromTimestamp(timestamp: String?): String {
-        return normalizeDayKey(timestamp) ?: LocalDate.now(ZoneOffset.UTC).format(UPLOAD_DATE_FORMAT)
+        return UserCalendar.dayForUtcTimestamp(timestamp, UTC_TIMESTAMP_FORMAT)
+            ?.format(UPLOAD_DATE_FORMAT)
+            ?: normalizeDayKey(timestamp)
+            ?: UserCalendar.today().format(UPLOAD_DATE_FORMAT)
     }
 
     private fun upsertDailyReadActivity(
@@ -740,7 +744,7 @@ class SauceTrackerDatabase(private val appContext: Context) : SQLiteOpenHelper(
     }
 
     private fun readDateRange(range: StatsRange): Pair<String, String>? {
-        val today = LocalDate.now(ZoneOffset.UTC)
+        val today = UserCalendar.today()
         val start = when (range) {
             StatsRange.TODAY -> today
             StatsRange.WEEK -> today.minusDays(6)
@@ -1903,9 +1907,7 @@ class SauceTrackerDatabase(private val appContext: Context) : SQLiteOpenHelper(
             .atOffset(ZoneOffset.UTC)
             .toLocalDateTime()
             .format(UTC_TIMESTAMP_FORMAT)
-        val dayKey = Instant.ofEpochMilli(startMs)
-            .atOffset(ZoneOffset.UTC)
-            .toLocalDate()
+        val dayKey = UserCalendar.dayForInstant(Instant.ofEpochMilli(startMs))
             .format(UPLOAD_DATE_FORMAT)
 
         val values = ContentValues().apply {

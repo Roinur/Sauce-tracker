@@ -3,6 +3,7 @@ package com.roinur.saucetracker
 import com.roinur.saucetracker.data.backup.*
 import com.roinur.saucetracker.data.downloads.*
 import com.roinur.saucetracker.core.ui.components.*
+import com.roinur.saucetracker.core.time.UserCalendar
 import android.app.Activity
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -42,7 +43,6 @@ import com.roinur.saucetracker.feature.settings.*
 import com.roinur.saucetracker.feature.subscriptions.*
 import com.roinur.saucetracker.feature.suggestions.*
 import java.time.LocalDate
-import java.time.ZoneOffset
 
 @Composable
 internal fun LocalEntryHoldPopup(
@@ -243,7 +243,7 @@ internal fun ActivityHeatmap(
     onDaySelected: (DailyActivityPoint) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val today = LocalDate.now(ZoneOffset.UTC)
+    val today = UserCalendar.today()
     val startDate = when (range) {
         StatsRange.TODAY -> today
         StatsRange.WEEK -> today.minusDays(6)

@@ -2125,12 +2125,11 @@ internal fun BrowserScreen(
 
         ratingPromptState?.let { prompt ->
             AlertDialog(
-                onDismissRequest = {
-                    ratingPromptState = null
-                    if (prompt.closeAfter) {
-                        closeBrowserSecurely()
-                    }
-                },
+                onDismissRequest = {},
+                properties = DialogProperties(
+                    dismissOnBackPress = false,
+                    dismissOnClickOutside = false
+                ),
                 title = { Text("What do you rate this sauce?") },
                 text = {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {

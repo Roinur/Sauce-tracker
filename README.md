@@ -154,12 +154,14 @@ Version 1.8 turns the 1.7 architecture into practical speed, discovery, and reli
 - Refined Tag and Entry Heatmap presentation into the page layout while preserving nodes, layout behavior, pan, zoom, and thumbnail-zone controls.
 - Centralized library-change propagation so imports, deletes, ratings, reads, tags, subscriptions, heatmaps, and suggestions update coherently.
 - Kept thumbnail previews warm across updates and cold starts, and made tag counts reflect the active library filter atomically.
+- Made Today, Week, Month, Year, activity heatmaps, and reading-session day grouping follow the phone's local timezone while preserving UTC timestamps internally.
 - Hid already imported galleries from subscription updates and notification counts without removing them from complete backup history.
 - Added working dashboard page ordering in Personalization for Random, Suggested, and Sauce Finder, plus Subscriptions, Heatmap, and History.
 - Put entry-cycle, adaptive Home/Dashboard order, Browser, and default-sort controls directly inside the Personalization card, removing the duplicate order setting and intermediate overlay.
 - Further split the large Dashboard and Browser hosts into focused feature, parsing, media, duplicate, backup, download, and UI components.
 - Added a privacy-safe GitHub Media Mode with separate data, strong thumbnail masking, theme control, and capture tooling.
 - Added optional, direction-aware volume-button page navigation in Gallery Slideshow; vertical steps center middle pages while anchoring the first and last pages to their respective edges.
+- Prevented Android back gestures and outside taps from accidentally dismissing the Browser exit rating prompt; Skip remains the explicit way to continue without rating.
 - Moved the production Android identity to `com.roinur.saucetracker`, with full library and settings migration through export/import.
 
 See [CHANGELOG.md](CHANGELOG.md) for the complete release summary.

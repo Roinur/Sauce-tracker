@@ -39,6 +39,7 @@ All notable Sauce Tracker release changes are documented here.
 - Preserved the cached layout, complete point set, pan/zoom behavior, family outlines, and 10/25/50/100 percent thumbnail zones.
 - Centralized library-change propagation across entries, tags, creators, heatmaps, suggestions, subscriptions, ratings, and read state.
 - Made tag counts update atomically against the active library filter instead of briefly showing global totals.
+- Made statistics ranges, activity heatmaps, read activity, and reading-session day grouping follow the phone's local timezone while keeping stored timestamps in UTC.
 - Hid already imported galleries from subscription feeds, badges, and notification totals while retaining complete event history in backup/export paths.
 - Rebalanced dashboard discovery controls and kept subscription counts consistent with other dashboard cards.
 - Added persistent Personalization controls for the actual modern dashboard pagers: Random, Suggested, and Sauce Finder can be reordered independently from Subscriptions, Heatmap, and History.
@@ -50,6 +51,7 @@ All notable Sauce Tracker release changes are documented here.
 - Added optional, direction-aware Gallery Slideshow navigation: Volume Up moves right in horizontal mode and up in vertical mode; Volume Down moves left or down.
 - Made vertical volume-button steps center ordinary pages based on their measured height while keeping the first page top-aligned and the last page bottom-aligned.
 - Made a slideshow volume-button action enter immersive mode and consume the hardware event so media volume is not changed while the option is enabled.
+- Prevented Android back gestures and outside taps from accidentally dismissing the Browser exit rating prompt; the explicit Skip action remains available.
 - Continued the architecture cleanup by extracting Dashboard domain models, interactions, parsing, entry lists, tags, creators, subscriptions, suggestions, heatmap UI, backup assembly, and download control.
 - Split Browser parsing, duplicate detection, detail UI, gallery-list UI, and media components out of the Browser activity.
 - Removed an embedded Desktop Bridge TLS asset and kept generated bridge credentials outside tracked source.
