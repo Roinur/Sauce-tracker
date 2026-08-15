@@ -161,7 +161,7 @@ Version 1.8 turns the 1.7 architecture into practical speed, discovery, and reli
 - Further split the large Dashboard and Browser hosts into focused feature, parsing, media, duplicate, backup, download, and UI components.
 - Added a privacy-safe GitHub Media Mode with separate data, strong thumbnail masking, theme control, and capture tooling.
 - Added optional, direction-aware volume-button page navigation in Gallery Slideshow; vertical steps center middle pages while anchoring the first and last pages to their respective edges.
-- Prevented Android back gestures and outside taps from accidentally dismissing the Browser exit rating prompt; Skip remains the explicit way to continue without rating.
+- Prevented outside taps from dismissing Browser and local Gallery Slideshow rating prompts while preserving the global back gesture as a Skip action.
 - Moved the production Android identity to `com.roinur.saucetracker`, with full library and settings migration through export/import.
 
 See [CHANGELOG.md](CHANGELOG.md) for the complete release summary.

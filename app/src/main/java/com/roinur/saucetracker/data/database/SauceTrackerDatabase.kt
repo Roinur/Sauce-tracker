@@ -757,13 +757,13 @@ class SauceTrackerDatabase(private val appContext: Context) : SQLiteOpenHelper(
 
     private fun readRangeClause(range: StatsRange, alias: String = "e"): Pair<String, List<String>> {
         val bounds = readDateRange(range) ?: return "" to emptyList()
-        val dateExpr = "substr(COALESCE(NULLIF($alias.read_at, ''), $alias.added_at), 1, 10)"
+        val dateExpr = localCalendarDateSql("COALESCE(NULLIF($alias.read_at, ''), $alias.added_at)")
         return " AND $dateExpr BETWEEN ? AND ?" to listOf(bounds.first, bounds.second)
     }
 
     private fun queryReadCount(range: StatsRange): Int {
         val (entryRangeSql, entryRangeArgs) = readRangeClause(range, alias = "e")
-        val (sessionRangeSql, sessionRangeArgs) = readRangeClauseForDayKey(range, "s.day_key")
+        val (sessionRangeSql, sessionRangeArgs) = readRangeClauseForUtcTimestamp(range, "s.started_at")
         val sql = """
             SELECT COUNT(*)
             FROM (
@@ -786,7 +786,7 @@ class SauceTrackerDatabase(private val appContext: Context) : SQLiteOpenHelper(
 
     private fun queryPagesRead(range: StatsRange): Int {
         val (entryRangeSql, entryRangeArgs) = readRangeClause(range, alias = "e")
-        val (sessionRangeSql, sessionRangeArgs) = readRangeClauseForDayKey(range, "s.day_key")
+        val (sessionRangeSql, sessionRangeArgs) = readRangeClauseForUtcTimestamp(range, "s.started_at")
         val sql = """
             SELECT COALESCE(SUM(pages_read), 0)
             FROM (
@@ -1053,29 +1053,36 @@ class SauceTrackerDatabase(private val appContext: Context) : SQLiteOpenHelper(
         )
     }
 
-    private fun readRangeClauseForDayKey(
+    private fun localCalendarDateSql(timestampExpr: String): String {
+        return "date($timestampExpr, 'localtime')"
+    }
+
+    private fun readRangeClauseForUtcTimestamp(
         range: StatsRange,
-        columnExpr: String
+        timestampExpr: String
     ): Pair<String, List<String>> {
         val bounds = readDateRange(range) ?: return "" to emptyList()
-        return " AND $columnExpr BETWEEN ? AND ?" to listOf(bounds.first, bounds.second)
+        val dateExpr = localCalendarDateSql(timestampExpr)
+        return " AND $dateExpr BETWEEN ? AND ?" to listOf(bounds.first, bounds.second)
     }
 
     private fun queryDailyReadActivity(range: StatsRange): List<DailyActivityPoint> {
         val (entryRangeSql, entryRangeArgs) = readRangeClause(range, alias = "e")
-        val (sessionRangeSql, sessionRangeArgs) = readRangeClauseForDayKey(range, "s.day_key")
+        val (sessionRangeSql, sessionRangeArgs) = readRangeClauseForUtcTimestamp(range, "s.started_at")
+        val entryDateExpr = localCalendarDateSql("COALESCE(NULLIF(e.read_at, ''), e.added_at)")
+        val sessionDateExpr = localCalendarDateSql("s.started_at")
         val sql = """
             SELECT activity_date,
                    COALESCE(SUM(pages_read), 0) AS pages_read,
                    COALESCE(SUM(entries_read), 0) AS entries_read
             FROM (
-                SELECT substr(COALESCE(NULLIF(e.read_at, ''), e.added_at), 1, 10) AS activity_date,
+                SELECT $entryDateExpr AS activity_date,
                        CASE WHEN e.num_pages > 0 THEN e.num_pages ELSE 0 END AS pages_read,
                        1 AS entries_read
                 FROM entries e
                 WHERE COALESCE(e.read_state, 0) = 1$entryRangeSql
                 UNION ALL
-                SELECT s.day_key AS activity_date,
+                SELECT $sessionDateExpr AS activity_date,
                        CASE WHEN s.pages_viewed > 0 THEN s.pages_viewed ELSE 0 END AS pages_read,
                        1 AS entries_read
                 FROM reading_sessions s
@@ -1105,6 +1112,8 @@ class SauceTrackerDatabase(private val appContext: Context) : SQLiteOpenHelper(
     fun listReadEntriesForDay(day: LocalDate): List<DayReadEntryRow> {
         val dayKey = day.format(UPLOAD_DATE_FORMAT)
         val rows = mutableListOf<DayReadEntryRow>()
+        val entryDateExpr = localCalendarDateSql("COALESCE(NULLIF(e.read_at, ''), e.added_at)")
+        val sessionDateExpr = localCalendarDateSql("s.started_at")
         val sql = """
             SELECT
                 'entry:' || e.code AS row_key,
@@ -1119,7 +1128,7 @@ class SauceTrackerDatabase(private val appContext: Context) : SQLiteOpenHelper(
                 0 AS is_reread
             FROM entries e
             WHERE COALESCE(e.read_state, 0) = 1
-              AND substr(COALESCE(NULLIF(e.read_at, ''), e.added_at), 1, 10) = ?
+              AND $entryDateExpr = ?
             UNION ALL
             SELECT
                 'session:' || s.id AS row_key,
@@ -1134,7 +1143,7 @@ class SauceTrackerDatabase(private val appContext: Context) : SQLiteOpenHelper(
                 1 AS is_reread
             FROM reading_sessions s
             JOIN entries e ON e.code = s.entry_code
-            WHERE s.day_key = ?
+            WHERE $sessionDateExpr = ?
               AND COALESCE(s.is_reread, 0) = 1
             ORDER BY read_at DESC, e.code DESC
         """.trimIndent()
@@ -1170,7 +1179,7 @@ class SauceTrackerDatabase(private val appContext: Context) : SQLiteOpenHelper(
     }
 
     private fun queryReadingSpeedStats(range: StatsRange): ReadingSpeedStats {
-        val (rangeSql, rangeArgs) = readRangeClauseForDayKey(range, "s.day_key")
+        val (rangeSql, rangeArgs) = readRangeClauseForUtcTimestamp(range, "s.started_at")
         val sql = """
             SELECT
                 COALESCE(SUM(CASE WHEN s.pages_viewed > 0 THEN s.pages_viewed ELSE 0 END), 0) AS total_pages_viewed,

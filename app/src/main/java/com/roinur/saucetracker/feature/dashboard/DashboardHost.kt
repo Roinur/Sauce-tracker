@@ -2990,6 +2990,10 @@ internal fun DashboardContent(
     vm.browserRatingPromptState?.let { prompt ->
         AlertDialog(
             onDismissRequest = vm::skipBrowserRatingPrompt,
+            properties = DialogProperties(
+                dismissOnBackPress = true,
+                dismissOnClickOutside = false
+            ),
             title = { Text("What do you rate this sauce?") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {

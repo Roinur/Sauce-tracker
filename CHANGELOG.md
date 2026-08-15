@@ -51,7 +51,7 @@ All notable Sauce Tracker release changes are documented here.
 - Added optional, direction-aware Gallery Slideshow navigation: Volume Up moves right in horizontal mode and up in vertical mode; Volume Down moves left or down.
 - Made vertical volume-button steps center ordinary pages based on their measured height while keeping the first page top-aligned and the last page bottom-aligned.
 - Made a slideshow volume-button action enter immersive mode and consume the hardware event so media volume is not changed while the option is enabled.
-- Prevented Android back gestures and outside taps from accidentally dismissing the Browser exit rating prompt; the explicit Skip action remains available.
+- Prevented outside taps from dismissing Browser and local Gallery Slideshow rating prompts while preserving the global back gesture as a Skip action.
 - Continued the architecture cleanup by extracting Dashboard domain models, interactions, parsing, entry lists, tags, creators, subscriptions, suggestions, heatmap UI, backup assembly, and download control.
 - Split Browser parsing, duplicate detection, detail UI, gallery-list UI, and media components out of the Browser activity.
 - Removed an embedded Desktop Bridge TLS asset and kept generated bridge credentials outside tracked source.
