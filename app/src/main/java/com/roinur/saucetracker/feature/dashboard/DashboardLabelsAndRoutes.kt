@@ -71,6 +71,11 @@ internal fun dashboardInsightPageLabel(page: DashboardInsightPage): String = whe
     DashboardInsightPage.HISTORY -> "History"
 }
 
+internal fun heatmapOverviewPageLabel(page: HeatmapOverviewPage): String = when (page) {
+    HeatmapOverviewPage.HEATMAP -> "Heatmap overview"
+    HeatmapOverviewPage.READING_TRENDS -> "Reading trends"
+}
+
 internal fun homeSurfaceTitle(surface: HomeSurface): String {
     return when (surface) {
         HomeSurface.DASHBOARD -> APP_TITLE

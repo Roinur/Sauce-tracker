@@ -78,6 +78,8 @@ import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
@@ -91,6 +93,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -120,6 +123,7 @@ import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.material3.Surface
+import androidx.compose.material3.SuggestionChip
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material.ripple.rememberRipple
@@ -136,6 +140,7 @@ import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -157,6 +162,7 @@ import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
@@ -183,6 +189,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.ui.platform.LocalView
@@ -432,6 +439,7 @@ private fun PersonalizationSettingsControls(
     vm: com.roinur.saucetracker.feature.dashboard.DashboardViewModel,
     onOpenEntryModeCycle: () -> Unit,
     onOpenHomeOrder: () -> Unit,
+    onOpenHeatmapPageOrder: () -> Unit,
     onOpenBrowserDuplicateMode: () -> Unit,
     onOpenSort: (PersonalizationSortTarget) -> Unit
 ) {
@@ -464,6 +472,21 @@ private fun PersonalizationSettingsControls(
     )
     Button(onClick = onOpenHomeOrder, modifier = Modifier.fillMaxWidth()) {
         Text(if (vm.legacyHomeUi) "Customize Legacy Home Page" else "Customize Dashboard Pages")
+    }
+    if (!vm.legacyHomeUi) {
+        Text(
+            text = "Heatmap pages",
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.SemiBold
+        )
+        Text(
+            text = vm.heatmapOverviewPageOrderSummary(),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Button(onClick = onOpenHeatmapPageOrder, modifier = Modifier.fillMaxWidth()) {
+            Text("Customize Heatmap Pages")
+        }
     }
     HorizontalDivider(
         color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.75f),
@@ -800,6 +823,53 @@ private fun DashboardBodyReveal(
     }
 }
 
+@Composable
+private fun HeatmapOverviewPagerIndicator(progress: () -> Float) {
+    val currentProgress = progress().coerceIn(0f, 1f)
+    val safeBottom = WindowInsets.safeDrawing
+        .asPaddingValues()
+        .calculateBottomPadding()
+    val indicatorOffsetPx = with(LocalDensity.current) {
+        (safeBottom + 28.dp).roundToPx()
+    }
+    Popup(
+        alignment = Alignment.BottomCenter,
+        offset = IntOffset(0, -indicatorOffsetPx),
+        properties = PopupProperties(focusable = false, clippingEnabled = false)
+    ) {
+        Row(
+            modifier = Modifier
+                .background(
+                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f),
+                    shape = RoundedCornerShape(999.dp)
+                )
+                .padding(horizontal = 9.dp, vertical = 7.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            repeat(2) { index ->
+                val selectionAmount = (1f - abs(currentProgress - index.toFloat()))
+                    .coerceIn(0f, 1f)
+                Box(
+                    modifier = Modifier
+                        .size(
+                            width = (7f + 11f * selectionAmount).dp,
+                            height = 7.dp
+                        )
+                        .background(
+                            color = lerp(
+                                MaterialTheme.colorScheme.outlineVariant,
+                                MaterialTheme.colorScheme.primary,
+                                selectionAmount
+                            ),
+                            shape = RoundedCornerShape(999.dp)
+                        )
+                )
+            }
+        }
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 internal fun DashboardContent(
@@ -829,6 +899,9 @@ internal fun DashboardContent(
     var selectedTagHeatmapDisplayMode by remember { mutableStateOf(TagHeatmapDisplayMode.TAGS) }
     var heatmapOverviewCollapsed by remember { mutableStateOf(true) }
     var homeHeatmapDisplayMode by remember { mutableStateOf(TagHeatmapDisplayMode.TAGS) }
+    var homeHeatmapOverviewPage by remember { mutableStateOf(0) }
+    var homeHeatmapSearchVisible by remember { mutableStateOf(true) }
+    val homeHeatmapOverviewProgress = remember { mutableFloatStateOf(0f) }
     var homeHeatmapSelectionSheetState by remember { mutableStateOf<GraphSelectionSheetState?>(null) }
     var homeHeatmapSelectionSheetHeightFraction by remember(homeHeatmapSelectionSheetState) {
         mutableStateOf(homeHeatmapBaseSheetHeightFraction(homeHeatmapSelectionSheetState))
@@ -842,9 +915,11 @@ internal fun DashboardContent(
     var suggestedDuplicateComparisonState by suggestedDuplicateComparisonStateHolder
     var showClearHiddenSuggestionsPrompt by remember { mutableStateOf(false) }
     var showSuggestedWeightsDialog by remember { mutableStateOf(false) }
+    var showLibraryHealthDialog by remember { mutableStateOf(false) }
     var showBrowserDuplicateModeDialog by remember { mutableStateOf(false) }
     var showEntryModeCycleDialog by remember { mutableStateOf(false) }
     var showCustomizeHomeDialog by remember { mutableStateOf(false) }
+    var showHeatmapPageOrderDialog by remember { mutableStateOf(false) }
     var dashboardVisitNonce by remember { mutableStateOf(0L) }
     var historyStatsRange by remember { mutableStateOf(StatsRange.MONTH) }
     var historySelectedDay by remember { mutableStateOf<DailyActivityPoint?>(null) }
@@ -1031,7 +1106,7 @@ internal fun DashboardContent(
     val homeHeatmapExpanded = homeSurface == HomeSurface.HEATMAP && !heatmapOverviewCollapsed
     val heatmapSessionActive = showTagGraphDialog || homeHeatmapExpanded
     val hasFilteredHeatmapScope = vm.entrySearch.isNotBlank() ||
-        vm.activeTagFilterIds.isNotEmpty() ||
+        vm.hasActiveTagFilter() ||
         vm.entryReadFilter != EntryReadFilterMode.ALL
     val filteredHeatmapSnapshot by produceState<TagGraphSnapshot?>(
         initialValue = null,
@@ -1415,6 +1490,9 @@ internal fun DashboardContent(
             runOnPressWhen = isAnyListScrolling
         )
     }
+    if (showLibraryHealthDialog) {
+        LibraryHealthDialog(vm = vm, onDismiss = { showLibraryHealthDialog = false })
+    }
 
     LaunchedEffect(homeSurface, pendingSuggestedScrollCode, vm.suggestedEntries) {
         val targetCode = pendingSuggestedScrollCode ?: return@LaunchedEffect
@@ -1595,6 +1673,67 @@ internal fun DashboardContent(
                             }
                         }
                     }
+            }
+        }
+    }
+
+    if (showHeatmapPageOrderDialog) {
+        AnimatedOverlayCard(
+            onDismissRequest = { showHeatmapPageOrderDialog = false },
+            modifier = Modifier.heightIn(max = configuration.screenHeightDp.dp * 0.72f),
+            coverSystemBars = true
+        ) {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Heatmap Page Order",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    ImmediateActionText(
+                        label = "Close",
+                        onAction = { showHeatmapPageOrderDialog = false },
+                        onPressStart = ::stopActiveScrolls,
+                        runOnPressWhen = isAnyListScrolling,
+                        textStyle = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+                Text(
+                    text = "Choose which page opens first inside Heatmap Overview.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                HeatmapOverviewPageOrderEditor(
+                    pages = vm.heatmapOverviewPageOrder,
+                    onReorder = { order ->
+                        vm.updateHeatmapOverviewPageOrder(order)
+                        homeHeatmapOverviewPage = 0
+                        homeHeatmapSearchVisible =
+                            order.firstOrNull() == HeatmapOverviewPage.HEATMAP
+                    }
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    TextButton(
+                        onClick = {
+                            vm.resetHeatmapOverviewPageOrder()
+                            homeHeatmapOverviewPage = 0
+                            homeHeatmapSearchVisible = true
+                        }
+                    ) {
+                        Text("Set To Default")
+                    }
+                }
             }
         }
     }
@@ -2062,6 +2201,7 @@ internal fun DashboardContent(
             showBrowserDuplicateModeDialog ||
             showEntryModeCycleDialog ||
             showCustomizeHomeDialog ||
+            showHeatmapPageOrderDialog ||
             personalizationSortTarget != null ||
             showSettingsTab ||
             (!vm.legacyHomeUi && homeSurface != HomeSurface.DASHBOARD) ||
@@ -2133,6 +2273,9 @@ internal fun DashboardContent(
             }
             showCustomizeHomeDialog -> {
                 showCustomizeHomeDialog = false
+            }
+            showHeatmapPageOrderDialog -> {
+                showHeatmapPageOrderDialog = false
             }
             showSuggestedWeightsDialog -> {
                 showSuggestedWeightsDialog = false
@@ -4451,6 +4594,12 @@ internal fun DashboardContent(
             }
         )
 
+        if (!showSettingsTab && !vm.legacyHomeUi && homeSurface == HomeSurface.HEATMAP) {
+            HeatmapOverviewPagerIndicator {
+                homeHeatmapOverviewProgress.floatValue
+            }
+        }
+
         val useAdaptiveDashboardViewport = !showSettingsTab &&
             !vm.legacyHomeUi &&
             homeSurface == HomeSurface.DASHBOARD
@@ -4467,11 +4616,15 @@ internal fun DashboardContent(
             )
 
         LazyColumn(
-            modifier = rootListModifier,
-            state = rootListState,
-            contentPadding = PaddingValues(12.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
+                modifier = rootListModifier,
+                state = rootListState,
+                contentPadding = if (!showSettingsTab && !vm.legacyHomeUi && homeSurface == HomeSurface.HEATMAP) {
+                    PaddingValues(horizontal = 12.dp)
+                } else {
+                    PaddingValues(12.dp)
+                },
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
             if (showSettingsTab) {
                 item {
                     Card {
@@ -4571,6 +4724,13 @@ internal fun DashboardContent(
                                 modifier = Modifier.fillMaxWidth()
                             ) {
                                 Text("Backup Now")
+                            }
+                            Button(
+                                onClick = { showLibraryHealthDialog = true },
+                                enabled = !backupBusy,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text("Library Health")
                             }
                             Button(
                                 onClick = { showRecalculateEntryHeatmapWarning = true },
@@ -4951,6 +5111,7 @@ internal fun DashboardContent(
                                     vm = vm,
                                     onOpenEntryModeCycle = { showEntryModeCycleDialog = true },
                                     onOpenHomeOrder = { showCustomizeHomeDialog = true },
+                                    onOpenHeatmapPageOrder = { showHeatmapPageOrderDialog = true },
                                     onOpenBrowserDuplicateMode = { showBrowserDuplicateModeDialog = true },
                                     onOpenSort = { personalizationSortTarget = it }
                                 )
@@ -5780,6 +5941,26 @@ internal fun DashboardContent(
                 }
             } else {
             item {
+                androidx.compose.animation.AnimatedVisibility(
+                    visible = vm.legacyHomeUi ||
+                        homeSurface != HomeSurface.HEATMAP ||
+                        homeHeatmapSearchVisible,
+                    enter = androidx.compose.animation.fadeIn(
+                        animationSpec = androidx.compose.animation.core.tween(
+                            durationMillis = 180,
+                            delayMillis = 50
+                        )
+                    ) + androidx.compose.animation.expandVertically(
+                        expandFrom = Alignment.Top,
+                        animationSpec = androidx.compose.animation.core.tween(durationMillis = 260)
+                    ),
+                    exit = androidx.compose.animation.fadeOut(
+                        animationSpec = androidx.compose.animation.core.tween(durationMillis = 160)
+                    ) + androidx.compose.animation.shrinkVertically(
+                        shrinkTowards = Alignment.Top,
+                        animationSpec = androidx.compose.animation.core.tween(durationMillis = 260)
+                    )
+                ) {
                 Card(
                     colors = CardDefaults.cardColors(
                         containerColor = MaterialTheme.colorScheme.surfaceContainerLow
@@ -5881,9 +6062,36 @@ internal fun DashboardContent(
                                         searchFieldFocused = focusState.isFocused
                                     }
                             )
+                            val suggestedPresetName = vm.suggestedTagPresetNameForInput()
+                            var animatedPresetName by remember { mutableStateOf<String?>(null) }
+                            LaunchedEffect(suggestedPresetName) {
+                                if (suggestedPresetName != null) animatedPresetName = suggestedPresetName
+                            }
+                            androidx.compose.animation.AnimatedVisibility(
+                                visible = suggestedPresetName != null,
+                                enter = androidx.compose.animation.fadeIn(
+                                    animationSpec = androidx.compose.animation.core.tween(180)
+                                ) + androidx.compose.animation.expandVertically(
+                                    animationSpec = androidx.compose.animation.core.tween(220)
+                                ),
+                                exit = androidx.compose.animation.fadeOut(
+                                    animationSpec = androidx.compose.animation.core.tween(180)
+                                ) + androidx.compose.animation.shrinkVertically(
+                                    animationSpec = androidx.compose.animation.core.tween(220)
+                                )
+                            ) {
+                                animatedPresetName?.let { presetName ->
+                                    SuggestionChip(
+                                        onClick = { vm.applySuggestedTagPreset(presetName) },
+                                        label = { Text("Use tag preset: $presetName") },
+                                        modifier = Modifier.padding(top = 4.dp)
+                                    )
+                                }
+                            }
                             if (vm.experimentalFilterStatusStrip) {
                                 ExperimentalTagFilterChipField(
                                     chips = vm.activeTagFilterChips(),
+                                    presetName = vm.activeTagPresetName,
                                     showingCount = tagFilterShowingEntriesCount,
                                     incognitoModeEnabled = vm.incognitoModeEnabled,
                                     onRemoveTag = vm::toggleTagFilter,
@@ -5904,7 +6112,7 @@ internal fun DashboardContent(
                                     } else {
                                         VisualTransformation.None
                                     },
-                                    trailingIcon = if (vm.activeTagFilterIds.isNotEmpty()) {
+                                    trailingIcon = if (vm.hasActiveTagFilter()) {
                                         {
                                             Row(verticalAlignment = Alignment.CenterVertically) {
                                                 Text(
@@ -5965,6 +6173,7 @@ internal fun DashboardContent(
                     }
                 }
             }
+            }
 
             if (!vm.legacyHomeUi && homeSurface == HomeSurface.DASHBOARD) {
                 item {
@@ -6000,6 +6209,9 @@ internal fun DashboardContent(
                             },
                             onOpenHeatmap = {
                                 heatmapOverviewCollapsed = false
+                                homeHeatmapOverviewPage = 0
+                                homeHeatmapSearchVisible =
+                                    vm.heatmapOverviewPageOrder.firstOrNull() == HeatmapOverviewPage.HEATMAP
                                 switchHomeSurface(HomeSurface.HEATMAP)
                             },
                             onOpenHistory = {
@@ -6048,7 +6260,8 @@ internal fun DashboardContent(
                                 { personalizationSortTarget = PersonalizationSortTarget.CREATORS }
                             } else {
                                 null
-                            }
+                            },
+                            onHeatmapLongPress = { showHeatmapPageOrderDialog = true }
                         )
                     }
                 }
@@ -6265,7 +6478,29 @@ internal fun DashboardContent(
                                 },
                                 entryLayoutSessionCache = sharedTagGraphEntryLayoutCache,
                                 legacyCollapsed = heatmapOverviewCollapsed,
-                                onLegacyCollapsedChange = { heatmapOverviewCollapsed = it }
+                                onLegacyCollapsedChange = { heatmapOverviewCollapsed = it },
+                                pageOrder = vm.heatmapOverviewPageOrder,
+                                overviewPage = homeHeatmapOverviewPage,
+                                onOverviewPageChange = { page ->
+                                    homeHeatmapOverviewPage = page
+                                    if (
+                                        vm.heatmapOverviewPageOrder.getOrNull(page) ==
+                                        HeatmapOverviewPage.HEATMAP
+                                    ) {
+                                        screenScope.launch {
+                                            // The search card expands above the heatmap item. Move the
+                                            // outer list back to its real top so LazyColumn cannot keep
+                                            // the heatmap header anchored over the returning card.
+                                            delay(16)
+                                            rootListState.animateScrollToItem(0)
+                                        }
+                                    }
+                                },
+                                onSearchVisibilityChange = { homeHeatmapSearchVisible = it },
+                                onOverviewPageProgressChange = {
+                                    homeHeatmapOverviewProgress.floatValue = it
+                                },
+                                modifier = Modifier.fillParentMaxHeight()
                             )
                         }
                     }

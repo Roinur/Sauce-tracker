@@ -70,6 +70,19 @@ internal object PortablePreferences {
         return decoded
     }
 
+    internal fun isValidSnapshot(snapshot: JSONObject?): Boolean {
+        if (snapshot == null) return false
+        if (snapshot.optInt(KEY_FORMAT_VERSION, 0) != FORMAT_VERSION) return false
+        val values = snapshot.optJSONObject(KEY_VALUES) ?: return false
+        val keys = values.keys()
+        while (keys.hasNext()) {
+            val key = keys.next()
+            val encoded = values.optJSONObject(key) ?: return false
+            if (isPortable(key) && decodeValue(encoded) == null) return false
+        }
+        return true
+    }
+
     internal fun isPortable(key: String): Boolean = key.isNotBlank() && key !in excludedKeys
 
     private fun encodeValue(value: Any?): JSONObject? = when (value) {

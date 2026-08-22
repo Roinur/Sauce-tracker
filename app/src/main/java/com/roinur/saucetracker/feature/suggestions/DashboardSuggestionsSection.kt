@@ -44,6 +44,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -102,6 +103,18 @@ internal fun DashboardSuggestionsSection(
         return
     }
 
+    var showTasteTraining by rememberSaveable { mutableStateOf(false) }
+    var openTasteTrainingWhenReady by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(openTasteTrainingWhenReady, vm.tasteTrainingPromptLoading) {
+        if (openTasteTrainingWhenReady && !vm.tasteTrainingPromptLoading) {
+            openTasteTrainingWhenReady = false
+            showTasteTraining = true
+        }
+    }
+    if (showTasteTraining) {
+        TasteTrainingDialog(vm = vm, onDismiss = { showTasteTraining = false })
+    }
+
     LaunchedEffect(Unit) {
         if (vm.suggestedEntriesCollapsed) {
             vm.toggleSuggestedEntriesCollapsed()
@@ -126,7 +139,9 @@ internal fun DashboardSuggestionsSection(
                 Text(
                     "Suggested entries",
                     style = MaterialTheme.typography.headlineSmall,
-                    fontWeight = FontWeight.Black
+                    fontWeight = FontWeight.Black,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
                 Text(
                     text = when {
@@ -138,24 +153,46 @@ internal fun DashboardSuggestionsSection(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(0.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                TextButton(onClick = onShowWeights) {
+            CompositionLocalProvider(LocalMinimumInteractiveComponentEnforcement provides false) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(0.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                TextButton(
+                    onClick = {
+                        openTasteTrainingWhenReady = true
+                        vm.refreshTasteTrainingPrompts()
+                    },
+                    enabled = !vm.incognitoModeEnabled && !vm.tasteTrainingPromptLoading,
+                    contentPadding = PaddingValues(horizontal = 5.dp, vertical = 8.dp)
+                ) {
+                    Text(
+                        if (vm.tasteTrainingPromptLoading) "Preparing" else "Train",
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+                TextButton(
+                    onClick = onShowWeights,
+                    contentPadding = PaddingValues(horizontal = 5.dp, vertical = 8.dp)
+                ) {
                     Text(
                         "Tune",
                         style = MaterialTheme.typography.labelLarge,
                         fontWeight = FontWeight.SemiBold
                     )
                 }
-                TextButton(onClick = vm::refreshSuggestedEntriesForCurrentSession) {
+                TextButton(
+                    onClick = vm::refreshSuggestedEntriesForCurrentSession,
+                    contentPadding = PaddingValues(horizontal = 5.dp, vertical = 8.dp)
+                ) {
                     Text(
                         "Refresh",
                         style = MaterialTheme.typography.labelLarge,
                         fontWeight = FontWeight.SemiBold
                     )
                 }
+            }
             }
         }
 

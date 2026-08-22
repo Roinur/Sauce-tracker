@@ -39,7 +39,7 @@ internal val CREATOR_TYPED_INPUT_PATTERN = Regex("(?i)^(artist|group)\\s*:\\s*(.
 internal val CREATOR_NAME_LINE_PATTERN = Regex("^[\\p{L}\\p{N} _.'()\\-]{2,80}$")
 internal const val URL_TRAILING_PUNCT = ".,;:!?)]}"
 internal val SEARCH_FIELD_PATTERN = Regex(
-    "(?i)\\b(code|title|subtitle|pages?|num pages|upload(?: date)?|rating|fetched(?: at)?|added(?: at)?|url|source(?: url)?|link|tags?|artist|group|parody|character|category|language|lang|type)\\s*:\\s*"
+    "(?i)\\b(code|title|subtitle|pages?|num pages|upload(?: date)?|rating|fetched(?: at)?|added(?: at)?|url|source(?: url)?|link|anytagid|excludetagid|anytag|excludetag|tags?|artist|group|parody|character|category|language|lang|type)\\s*:\\s*"
 )
 internal val DATE_TOKEN_PATTERN = Regex("\\d{4}-\\d{2}-\\d{2}")
 internal val POPULAR_TAG_ANCHOR_PATTERN = Regex(
@@ -123,6 +123,11 @@ enum class DashboardInsightPage {
     SUBSCRIPTIONS,
     HEATMAP,
     HISTORY
+}
+
+enum class HeatmapOverviewPage {
+    HEATMAP,
+    READING_TRENDS
 }
 
 internal enum class HomeSurface {
@@ -393,5 +398,14 @@ data class ReadAnalyticsSnapshot(
     val topTags: Map<StatsRange, List<AnalyticsCountRow>> = emptyMap(),
     val topCreators: Map<StatsRange, List<AnalyticsCountRow>> = emptyMap(),
     val dailyActivity: Map<StatsRange, List<DailyActivityPoint>> = emptyMap(),
-    val readingSpeed: Map<StatsRange, ReadingSpeedStats> = emptyMap()
+    val readingSpeed: Map<StatsRange, ReadingSpeedStats> = emptyMap(),
+    val readBreakdowns: Map<StatsRange, ReadCountBreakdown> = emptyMap()
 )
+
+data class ReadCountBreakdown(
+    val uniqueEntries: Int = 0,
+    val rereads: Int = 0
+) {
+    val total: Int
+        get() = uniqueEntries + rereads
+}

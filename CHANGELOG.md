@@ -2,6 +2,36 @@
 
 All notable Sauce Tracker release changes are documented here.
 
+## 1.9.0 - 2026-08-22
+
+### Reading Trends and history
+
+- Added a full Reading Trends page beside Heatmap Overview with configurable page order, swipe navigation, and a persistent floating page indicator.
+- Added Tags and Artists / Groups comparisons across Today, Week, Month, Year, and All Time using adaptive time bins.
+- Added Reads and Share scales with All, Positive, and confidence-adjusted average-rating views.
+- Added stable comparison colors, restrained curve smoothing, drag inspection, long-press period explanations, and ghosted refresh transitions.
+- Added minimum prevalence filters, Include misc, View all, and metric-aware Unique Trends combining core interests, metric standouts, and curve-shape outliers.
+- Added sample-aware rating handling, long-range Reads normalization, retained empty-period ratios/averages, and partial-bucket corrections.
+- Added a Reading History breakdown separating unique reads from rereads.
+- Counted the original read in its original trend period and every reread exactly once in the period when it occurred.
+
+### Recommendations and presets
+
+- Added Train your model as a bounded explanation layer over the existing Suggested Entries engine using ordinary tags, artists, and groups while excluding language, category, and similar generic metadata.
+- Added reviewable training history plus Not about metadata and Reason not listed escape choices.
+- Loaded complete current tag metadata before showing a training question and made long question lists internally scrollable without hiding actions.
+- Added named Tag Presets with Include, Either, and Hide rules, editing, ordering, Search Everything suggestions, and direct application as local-library filters.
+- Kept presets and training records separate from imported tags, heatmaps, and trend counts.
+
+### Reliability and diagnostics
+
+- Added Library Health checks covering SQLite integrity, orphaned relations, ratings, reading history, document permissions, caches, Sauce Finder, and new local preference stores.
+- Added Verified Restore, which imports the current procedural backup twice into an isolated temporary database and verifies idempotence without touching production data.
+- Fixed Browser slideshow ratings so already-read entries default to Re-read and save a separate reread session without replacing the original rating.
+- Preserved privacy-safe graph QA by masking sensitive labels while leaving trend geometry visible in GitHub Media Mode.
+- Extended GitHub Media Mode masking to Train your model and Tag Presets without obscuring their controls.
+- Repaired Desktop Bridge TLS handshakes while preserving per-installation credentials: the bridge now generates a software key and self-signed certificate in private no-backup app storage rather than relying on a shared APK asset or an incompatible Android Keystore server key.
+
 ## 1.8.0 - 2026-08-14
 
 ### Sauce Finder

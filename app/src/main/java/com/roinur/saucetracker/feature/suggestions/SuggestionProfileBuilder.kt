@@ -71,7 +71,8 @@ internal fun buildSuggestionProfile(
         blockedTags: Set<String>,
         categoryWeights: Map<SuggestionWeightCategory, Float>,
         themeStrength: Float,
-        suggestionsViewModel: SuggestionsViewModel
+        suggestionsViewModel: SuggestionsViewModel,
+        explicitDriverAdjustments: Map<String, Float> = emptyMap()
     ): SuggestionPreferenceProfile {
         val tagWeights = linkedMapOf<String, Float>()
         val tagTypeByName = linkedMapOf<String, String>()
@@ -128,6 +129,23 @@ internal fun buildSuggestionProfile(
         }
         val creatorTypeByName = creatorTypeScores.mapValues { (_, scores) ->
             scores.maxByOrNull { it.value }?.key ?: "artist"
+        }.toMutableMap()
+        explicitDriverAdjustments.forEach { (rawKey, rawAdjustment) ->
+            val separator = rawKey.indexOf('|')
+            if (separator <= 0 || separator >= rawKey.lastIndex) return@forEach
+            val type = rawKey.substring(0, separator).trim().lowercase(Locale.US)
+            val name = normalizeTagName(rawKey.substring(separator + 1))
+            if (name.isBlank() || name in blockedTags || name in IGNORED_SUGGESTION_TAG_NAMES) return@forEach
+            val adjustment = rawAdjustment.coerceIn(-2.25f, 2.25f)
+            if (type == "artist" || type == "group") {
+                creatorWeights[name] = ((creatorWeights[name] ?: 0f) + adjustment).coerceIn(-12f, 24f)
+                creatorTypeByName.putIfAbsent(name, type)
+            } else {
+                val category = SuggestionWeightCategory.fromTagType(type)
+                val categoryScale = (categoryWeights[category] ?: 1f).coerceIn(0f, 2f)
+                tagWeights[name] = ((tagWeights[name] ?: 0f) + adjustment * categoryScale).coerceIn(-12f, 24f)
+                tagTypeByName.putIfAbsent(name, type.ifBlank { "tag" })
+            }
         }
         val tagThemeWeights = suggestionsViewModel.themeWeights(
             tagWeights = tagWeights,
@@ -251,6 +269,14 @@ internal fun GalleryData.matchesSuggestionFilters(
                     normalizedTags.any { (name, type) ->
                         name.contains(normalizedValue) || type.contains(normalizedValue)
                     }
+            }
+            "anytag" -> {
+                val names = value.split('|').map(::normalizeTagName).filter { it.isNotBlank() }
+                names.isNotEmpty() && names.any { expected -> tagNames.any { it.contains(expected) } }
+            }
+            "excludetag" -> {
+                val names = value.split('|').map(::normalizeTagName).filter { it.isNotBlank() }
+                names.none { expected -> tagNames.any { it.contains(expected) } }
             }
             "type" -> {
                 normalizedValue.isNotBlank() &&

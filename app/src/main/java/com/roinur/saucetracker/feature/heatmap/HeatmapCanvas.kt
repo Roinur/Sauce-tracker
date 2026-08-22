@@ -216,7 +216,9 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.roinur.saucetracker.core.diagnostics.PerformanceMetrics
+import com.roinur.saucetracker.core.diagnostics.PerformanceMetrics
+
+import com.roinur.saucetracker.core.diagnostics.GitHubMediaSession
 import com.roinur.saucetracker.core.media.BitmapMemoryCache
 import com.roinur.saucetracker.core.media.computeDHash64
 import com.roinur.saucetracker.core.network.HttpClientFactory
@@ -317,6 +319,7 @@ internal fun HeatmapCanvas(
 ) {
     val context = LocalContext.current
     val isEntryHeatmap = selectedTab == TagGraphTab.HEATMAP && selectedHeatmapDisplayMode == TagHeatmapDisplayMode.ENTRIES
+    val githubTagTextMask = GitHubMediaSession.active && selectedHeatmapDisplayMode == TagHeatmapDisplayMode.TAGS
     val isHeatmapGraph = selectedTab == TagGraphTab.HEATMAP
     val initialGraphZoom = when {
         isHeatmapGraph -> 0.46f
@@ -958,13 +961,20 @@ internal fun HeatmapCanvas(
                     typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
                 }
             }
+            val privacyLabelPaint = remember {
+                android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                    style = android.graphics.Paint.Style.FILL
+                }
+            }
             val axisPaint = remember {
                 android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
                     textSize = 23f
                 }
             }
+            val privacyLabelColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.98f)
             SideEffect {
                 labelPaint.color = textColor.toArgb()
+                privacyLabelPaint.color = privacyLabelColor.toArgb()
                 axisPaint.color = axisColor.toArgb()
             }
 
@@ -1259,12 +1269,22 @@ internal fun HeatmapCanvas(
                             }
                             val textWidth = labelPaint.measureText(node.name)
                             val centeredX = point.x - (textWidth / 2f)
-                            drawText(
-                                node.name,
-                                centeredX.coerceIn(graphLeftPx + 4f, graphRightPx - textWidth - 4f),
-                                (point.y - verticalOffset).coerceIn(graphTopPx + 20f, graphBottomPx - 10f),
-                                labelPaint
-                            )
+                            val labelX = centeredX.coerceIn(graphLeftPx + 4f, graphRightPx - textWidth - 4f)
+                            val labelY = (point.y - verticalOffset).coerceIn(graphTopPx + 20f, graphBottomPx - 10f)
+                            if (githubTagTextMask) {
+                                val cornerRadius = labelPaint.textSize * 0.32f
+                                drawRoundRect(
+                                    labelX,
+                                    labelY - (labelPaint.textSize * 0.82f),
+                                    labelX + textWidth,
+                                    labelY + (labelPaint.textSize * 0.08f),
+                                    cornerRadius,
+                                    cornerRadius,
+                                    privacyLabelPaint
+                                )
+                            } else {
+                                drawText(node.name, labelX, labelY, labelPaint)
+                            }
                         }
                     } else if (entryLayoutReady) {
                         if (familyOutlineVisible) {
@@ -1408,6 +1428,13 @@ internal fun HeatmapCanvas(
                             }
                             Text(
                                 text = "${node.name}  |  $detailText",
+                                modifier = Modifier.privacyObfuscate(
+                                    enabled = false,
+                                    overlayColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.98f),
+                                    expandHorizontal = 0.dp,
+                                    expandVertical = 0.dp,
+                                    cornerRadius = 6.dp
+                                ),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 maxLines = 1

@@ -7,7 +7,6 @@ import com.roinur.saucetracker.*
 import com.roinur.saucetracker.core.media.*
 import com.roinur.saucetracker.data.backup.*
 import com.roinur.saucetracker.feature.slideshow.GallerySlideshowActivity
-import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -79,6 +78,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CenterAlignedTopAppBar
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -112,6 +112,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.listSaver
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -178,6 +180,29 @@ import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.min
 import com.roinur.saucetracker.core.diagnostics.GitHubMediaSession
+private val BROWSER_EXIT_RATING_PROMPT_SAVER = listSaver<BrowserExitRatingPromptState?, Any>(
+    save = { prompt ->
+        if (prompt == null) emptyList() else listOf(
+            prompt.code,
+            prompt.title,
+            prompt.rating,
+            prompt.closeAfter,
+            prompt.wasReadBefore,
+            prompt.isReread
+        )
+    },
+    restore = { values ->
+        if (values.size != 6) null else BrowserExitRatingPromptState(
+            code = values[0] as Int,
+            title = values[1] as String,
+            rating = values[2] as Int,
+            closeAfter = values[3] as Boolean,
+            wasReadBefore = values[4] as Boolean,
+            isReread = values[5] as Boolean
+        )
+    }
+)
+
 @OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
 internal fun BrowserScreen(
@@ -283,9 +308,13 @@ internal fun BrowserScreen(
     var activeCreator by remember { mutableStateOf<BrowserCreatorRef?>(null) }
     var searchSortMode by remember { mutableStateOf(BrowserSearchSortMode.RECENT) }
     var clipboardImportPrompt by remember { mutableStateOf<String?>(null) }
-    var ratingPromptState by remember { mutableStateOf<BrowserExitRatingPromptState?>(null) }
+    var ratingPromptState by rememberSaveable(stateSaver = BROWSER_EXIT_RATING_PROMPT_SAVER) {
+        mutableStateOf<BrowserExitRatingPromptState?>(null)
+    }
     var pendingListImportRequest by remember { mutableStateOf<BrowserPendingImportRequest?>(null) }
-    var pendingSlideshowRatingCode by remember { mutableStateOf<Int?>(null) }
+    // This is an obligation, not transient UI state. Image pressure can recreate
+    // Browser while Slideshow is open, so retain the code until Save or Skip.
+    var pendingSlideshowRatingCode by rememberSaveable { mutableStateOf<Int?>(null) }
     var detailLoadRequestId by remember { mutableStateOf(0L) }
     var listLibraryStates by remember { mutableStateOf<Map<Int, BrowserLocalLibraryState>>(emptyMap()) }
     var listLibraryRequestId by remember { mutableStateOf(0L) }
@@ -491,11 +520,14 @@ internal fun BrowserScreen(
         scope.launch {
             val detail = withContext(Dispatchers.IO) { db.getEntryDetail(code) }
             val initial = detail?.rating?.coerceIn(0, 5) ?: 0
+            val wasReadBefore = detail?.isRead == true
             ratingPromptState = BrowserExitRatingPromptState(
                 code = code,
                 title = detail?.title?.ifBlank { fallbackTitle } ?: fallbackTitle,
                 rating = initial,
-                closeAfter = closeAfter
+                closeAfter = closeAfter,
+                wasReadBefore = wasReadBefore,
+                isReread = wasReadBefore
             )
         }
     }
@@ -504,7 +536,6 @@ internal fun BrowserScreen(
         contract = ActivityResultContracts.StartActivityForResult()
     ) {
         val code = pendingSlideshowRatingCode
-        pendingSlideshowRatingCode = null
         if (code != null && code > 0) {
             val title = selectedDetail?.takeIf { it.summary.code == code }?.summary?.title
                 ?.ifBlank { "Gallery $code" }
@@ -2127,6 +2158,7 @@ internal fun BrowserScreen(
             AlertDialog(
                 onDismissRequest = {
                     ratingPromptState = null
+                    pendingSlideshowRatingCode = null
                     if (prompt.closeAfter) {
                         closeBrowserSecurely()
                     }
@@ -2169,6 +2201,24 @@ internal fun BrowserScreen(
                                 )
                             }
                         }
+                        if (prompt.wasReadBefore) {
+                            Row(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .clickable {
+                                        ratingPromptState = prompt.copy(isReread = !prompt.isReread)
+                                    },
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Checkbox(
+                                    checked = prompt.isReread,
+                                    onCheckedChange = { checked ->
+                                        ratingPromptState = prompt.copy(isReread = checked)
+                                    }
+                                )
+                                Text("Re-read", style = MaterialTheme.typography.bodyMedium)
+                            }
+                        }
                     }
                 },
                 confirmButton = {
@@ -2191,12 +2241,17 @@ internal fun BrowserScreen(
                                         }
                                     }
                                     if (entryExists) {
-                                        db.setEntryRating(code, safeRating)
-                                        db.setEntryRead(code, true)
+                                        if (savePrompt.isReread) {
+                                            db.recordEntryRatingSession(code, safeRating, isReread = true)
+                                        } else {
+                                            db.setEntryRating(code, safeRating)
+                                            db.setEntryRead(code, true)
+                                        }
                                     }
                                     entryExists
                                 }
                                 ratingPromptState = null
+                                pendingSlideshowRatingCode = null
                                 if (!saved) {
                                     Toast.makeText(
                                         context,
@@ -2218,6 +2273,7 @@ internal fun BrowserScreen(
                         onClick = {
                             val shouldClose = prompt.closeAfter
                             ratingPromptState = null
+                            pendingSlideshowRatingCode = null
                             if (shouldClose) {
                                 closeBrowserSecurely()
                             }

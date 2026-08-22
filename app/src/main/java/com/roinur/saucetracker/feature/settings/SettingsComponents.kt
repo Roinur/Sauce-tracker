@@ -380,6 +380,14 @@ internal fun DashboardInsightPageOrderEditor(
 }
 
 @Composable
+internal fun HeatmapOverviewPageOrderEditor(
+    pages: List<HeatmapOverviewPage>,
+    onReorder: (List<HeatmapOverviewPage>) -> Unit
+) {
+    FixedDashboardPageOrderEditor(pages, ::heatmapOverviewPageLabel, onReorder)
+}
+
+@Composable
 private fun <T> FixedDashboardPageOrderEditor(
     items: List<T>,
     itemLabel: (T) -> String,

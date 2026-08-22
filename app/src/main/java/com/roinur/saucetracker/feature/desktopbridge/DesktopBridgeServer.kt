@@ -6,11 +6,15 @@ import com.roinur.saucetracker.*
 
 import android.content.Context
 import android.net.Uri
-import android.security.keystore.KeyGenParameterSpec
-import android.security.keystore.KeyProperties
+import android.util.Log
+import org.bouncycastle.asn1.x500.X500Name
+import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter
+import org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder
+import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
+import java.io.File
 import java.io.InputStream
 import java.net.Inet4Address
 import java.net.InetSocketAddress
@@ -22,9 +26,12 @@ import java.security.KeyPair
 import java.security.KeyPairGenerator
 import java.security.KeyStore
 import java.security.MessageDigest
+import java.security.Principal
+import java.security.PrivateKey
 import java.security.SecureRandom
 import java.security.spec.ECGenParameterSpec
 import java.security.spec.X509EncodedKeySpec
+import java.security.cert.X509Certificate
 import java.math.BigInteger
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
@@ -33,10 +40,9 @@ import java.util.Date
 import java.util.Locale
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
-import javax.security.auth.x500.X500Principal
-import javax.net.ssl.KeyManagerFactory
 import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLServerSocket
+import javax.net.ssl.X509KeyManager
 import javax.crypto.Cipher
 import javax.crypto.KeyAgreement
 import javax.crypto.spec.GCMParameterSpec
@@ -68,6 +74,8 @@ class DesktopBridgeServer(
 ) {
     companion object {
         private const val TLS_KEY_ALIAS = "sauce_tracker_desktop_bridge_tls"
+        private const val TLS_KEYSTORE_FILE = "desktop_bridge_tls.p12"
+        private const val TLS_PASSWORD_FILE = "desktop_bridge_tls.password"
         private const val TLS_CERTIFICATE_LIFETIME_MS = 20L * 365L * 24L * 60L * 60L * 1000L
     }
 
@@ -188,36 +196,105 @@ class DesktopBridgeServer(
     }
 
     private fun createTlsContext(): SSLContext {
-        val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-        if (!keyStore.containsAlias(TLS_KEY_ALIAS) || keyStore.getCertificate(TLS_KEY_ALIAS) == null) {
-            if (keyStore.containsAlias(TLS_KEY_ALIAS)) {
-                keyStore.deleteEntry(TLS_KEY_ALIAS)
-            }
-            val now = System.currentTimeMillis()
-            val serialNumber = BigInteger(160, SecureRandom()).coerceAtLeast(BigInteger.ONE)
-            KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_RSA, "AndroidKeyStore").apply {
-                initialize(
-                    KeyGenParameterSpec.Builder(
-                        TLS_KEY_ALIAS,
-                        KeyProperties.PURPOSE_SIGN or KeyProperties.PURPOSE_VERIFY
-                    )
-                        .setKeySize(2048)
-                        .setDigests(KeyProperties.DIGEST_SHA256)
-                        .setSignaturePaddings(KeyProperties.SIGNATURE_PADDING_RSA_PKCS1)
-                        .setCertificateSubject(X500Principal("CN=Sauce Tracker Desktop Bridge"))
-                        .setCertificateSerialNumber(serialNumber)
-                        .setCertificateNotBefore(Date(now - 60_000L))
-                        .setCertificateNotAfter(Date(now + TLS_CERTIFICATE_LIFETIME_MS))
-                        .build()
-                )
-                generateKeyPair()
-            }
+        val (keyStore, password) = loadOrCreateTlsKeyStore()
+        val privateKey = keyStore.getKey(TLS_KEY_ALIAS, password) as? PrivateKey
+            ?: error("Desktop Bridge TLS private key is unavailable.")
+        val certificateChain = keyStore.getCertificateChain(TLS_KEY_ALIAS)
+            ?.mapNotNull { it as? X509Certificate }
+            ?.toTypedArray()
+            ?.takeIf { it.isNotEmpty() }
+            ?: error("Desktop Bridge TLS certificate chain is unavailable.")
+        val keyManager = object : X509KeyManager {
+            private fun supports(keyType: String?): Boolean =
+                keyType.isNullOrBlank() || keyType.contains(privateKey.algorithm, ignoreCase = true)
+
+            override fun getClientAliases(
+                keyType: String?,
+                issuers: Array<out Principal>?
+            ): Array<String>? = null
+
+            override fun chooseClientAlias(
+                keyType: Array<out String>?,
+                issuers: Array<out Principal>?,
+                socket: Socket?
+            ): String? = null
+
+            override fun getServerAliases(
+                keyType: String?,
+                issuers: Array<out Principal>?
+            ): Array<String>? = if (supports(keyType)) arrayOf(TLS_KEY_ALIAS) else null
+
+            override fun chooseServerAlias(
+                keyType: String?,
+                issuers: Array<out Principal>?,
+                socket: Socket?
+            ): String? = if (supports(keyType)) TLS_KEY_ALIAS else null
+
+            override fun getCertificateChain(alias: String?): Array<X509Certificate>? =
+                if (alias == TLS_KEY_ALIAS) certificateChain.copyOf() else null
+
+            override fun getPrivateKey(alias: String?): PrivateKey? =
+                if (alias == TLS_KEY_ALIAS) privateKey else null
         }
-        val keyManagerFactory = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm())
-        keyManagerFactory.init(keyStore, null)
         return SSLContext.getInstance("TLS").apply {
-            init(keyManagerFactory.keyManagers, null, SecureRandom())
+            init(arrayOf(keyManager), null, SecureRandom())
         }
+    }
+
+    private fun loadOrCreateTlsKeyStore(): Pair<KeyStore, CharArray> {
+        val directory = appContext.noBackupFilesDir.apply { mkdirs() }
+        val keyStoreFile = File(directory, TLS_KEYSTORE_FILE)
+        val passwordFile = File(directory, TLS_PASSWORD_FILE)
+        if (keyStoreFile.isFile && passwordFile.isFile) {
+            val loaded = runCatching {
+                val password = passwordFile.readText(Charsets.US_ASCII).trim().toCharArray()
+                require(password.isNotEmpty())
+                val keyStore = KeyStore.getInstance("PKCS12")
+                keyStoreFile.inputStream().use { keyStore.load(it, password) }
+                require(keyStore.isKeyEntry(TLS_KEY_ALIAS))
+                keyStore to password
+            }.getOrNull()
+            if (loaded != null) return loaded
+        }
+
+        val password = generateToken(48).toCharArray()
+        val keyPair = KeyPairGenerator.getInstance("RSA").apply { initialize(2048) }.generateKeyPair()
+        val now = System.currentTimeMillis()
+        val subject = X500Name("CN=Sauce Tracker Desktop Bridge")
+        val serialNumber = BigInteger(160, SecureRandom()).coerceAtLeast(BigInteger.ONE)
+        val certificateBuilder = JcaX509v3CertificateBuilder(
+            subject,
+            serialNumber,
+            Date(now - 60_000L),
+            Date(now + TLS_CERTIFICATE_LIFETIME_MS),
+            subject,
+            keyPair.public
+        )
+        val certificate = JcaX509CertificateConverter().getCertificate(
+            certificateBuilder.build(
+                JcaContentSignerBuilder("SHA256withRSA").build(keyPair.private)
+            )
+        ).apply {
+            checkValidity()
+            verify(keyPair.public)
+        }
+        val keyStore = KeyStore.getInstance("PKCS12").apply {
+            load(null, password)
+            setKeyEntry(TLS_KEY_ALIAS, keyPair.private, password, arrayOf(certificate))
+        }
+        val keyStoreTemp = File(directory, "$TLS_KEYSTORE_FILE.tmp")
+        val passwordTemp = File(directory, "$TLS_PASSWORD_FILE.tmp")
+        keyStoreTemp.outputStream().use { keyStore.store(it, password) }
+        passwordTemp.writeText(String(password), Charsets.US_ASCII)
+        if (!keyStoreTemp.renameTo(keyStoreFile)) {
+            keyStoreTemp.copyTo(keyStoreFile, overwrite = true)
+            keyStoreTemp.delete()
+        }
+        if (!passwordTemp.renameTo(passwordFile)) {
+            passwordTemp.copyTo(passwordFile, overwrite = true)
+            passwordTemp.delete()
+        }
+        return keyStore to password
     }
 
     private fun acceptLoop(socket: ServerSocket) {
@@ -235,6 +312,8 @@ class DesktopBridgeServer(
                 val request = parseHttpRequest(client.getInputStream(), remote) ?: return@runCatching
                 val response = routeRequest(request)
                 writeHttpResponse(client, response)
+            }.onFailure { error ->
+                Log.e("SauceTrackerDesktopBridge", "Desktop Bridge client connection failed.", error)
             }
         }
     }

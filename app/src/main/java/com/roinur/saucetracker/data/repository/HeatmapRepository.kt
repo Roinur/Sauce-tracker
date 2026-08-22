@@ -5,6 +5,10 @@ import com.roinur.saucetracker.TagGraphDataSnapshot
 import com.roinur.saucetracker.TagGraphEntryLayoutResult
 import com.roinur.saucetracker.TagGraphSnapshot
 import com.roinur.saucetracker.data.database.SauceTrackerDatabase
+import com.roinur.saucetracker.feature.heatmap.TrendRequest
+import com.roinur.saucetracker.feature.heatmap.TrendSnapshot
+import com.roinur.saucetracker.feature.heatmap.TrendTarget
+import com.roinur.saucetracker.feature.heatmap.TrendTargetKind
 
 internal class HeatmapRepository(
     private val database: SauceTrackerDatabase
@@ -12,6 +16,9 @@ internal class HeatmapRepository(
     private val cache = database.heatmapCacheDao
 
     fun graphData(): TagGraphDataSnapshot = database.getTagGraphDataSnapshot()
+    fun trendTargets(kind: TrendTargetKind, includeMisc: Boolean): List<TrendTarget> =
+        database.listTrendTargets(kind, includeMisc)
+    fun trendSnapshot(request: TrendRequest): TrendSnapshot = database.getTrendSnapshot(request)
     fun cacheRecord(): EntryHeatmapCacheRecord? = cache.record()
     fun load(cacheKey: String, snapshot: TagGraphSnapshot): TagGraphEntryLayoutResult? =
         cache.load(cacheKey, snapshot)

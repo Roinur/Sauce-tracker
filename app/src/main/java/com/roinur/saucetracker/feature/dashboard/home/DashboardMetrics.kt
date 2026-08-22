@@ -172,6 +172,7 @@ internal fun SubscriptionHeatmapPreviewPanel(
     onOpenUpdates: () -> Unit,
     onOpenList: () -> Unit,
     onOpenHeatmap: () -> Unit,
+    onHeatmapLongPress: (() -> Unit)? = null,
     onOpenHistory: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -280,10 +281,11 @@ internal fun SubscriptionHeatmapPreviewPanel(
                             modifier = Modifier
                                 .fillMaxSize()
                                 .clip(panelShape)
-                                .clickable(
+                                .combinedClickable(
                                     interactionSource = heatmapInteraction,
                                     indication = null,
-                                    onClick = onOpenHeatmap
+                                    onClick = onOpenHeatmap,
+                                    onLongClick = onHeatmapLongPress
                                 )
                                 .padding(2.dp),
                             verticalArrangement = Arrangement.spacedBy(8.dp)

@@ -136,6 +136,27 @@ internal class DashboardPreferenceReader(
         return normalizedDashboardInsightPageOrder(parsed)
     }
 
+    fun defaultHeatmapOverviewPageOrder(): List<HeatmapOverviewPage> = listOf(
+        HeatmapOverviewPage.HEATMAP,
+        HeatmapOverviewPage.READING_TRENDS
+    )
+
+    fun normalizedHeatmapOverviewPageOrder(
+        order: List<HeatmapOverviewPage>
+    ): List<HeatmapOverviewPage> = normalizeHeatmapOverviewPageOrder(order)
+
+    fun loadHeatmapOverviewPageOrder(): List<HeatmapOverviewPage> {
+        val parsed = prefs.getString(KEY_HEATMAP_OVERVIEW_PAGE_ORDER, null)
+            ?.split(',')
+            ?.mapNotNull { token ->
+                HeatmapOverviewPage.entries.firstOrNull {
+                    it.name.equals(token.trim(), ignoreCase = true)
+                }
+            }
+            .orEmpty()
+        return normalizedHeatmapOverviewPageOrder(parsed)
+    }
+
     fun loadDefaultEntrySortField(): EntrySortField? {
         val raw = prefs.getString(KEY_DEFAULT_ENTRY_SORT_FIELD, "NONE").orEmpty()
         if (raw.equals("NONE", ignoreCase = true)) return null
@@ -259,6 +280,16 @@ internal fun normalizeDashboardInsightPageOrder(
         DashboardInsightPage.SUBSCRIPTIONS,
         DashboardInsightPage.HEATMAP,
         DashboardInsightPage.HISTORY
+    )
+    return order.distinct().filter { it in defaults } + defaults.filterNot { it in order }
+}
+
+internal fun normalizeHeatmapOverviewPageOrder(
+    order: List<HeatmapOverviewPage>
+): List<HeatmapOverviewPage> {
+    val defaults = listOf(
+        HeatmapOverviewPage.HEATMAP,
+        HeatmapOverviewPage.READING_TRENDS
     )
     return order.distinct().filter { it in defaults } + defaults.filterNot { it in order }
 }

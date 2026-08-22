@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.SauceTracker" parent="@android:style/Theme.DeviceDefault.NoActionBar">
+        <!-- Compose paints the real app theme. Suppress Android's light default
+             preview so returning from Browser never produces a white frame. -->
+        <item name="android:windowDisablePreview">true</item>
+        <item name="android:windowNoTitle">true</item>
+    </style>
+</resources>

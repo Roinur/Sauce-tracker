@@ -306,7 +306,9 @@ internal data class BrowserExitRatingPromptState(
     val code: Int,
     val title: String,
     val rating: Int,
-    val closeAfter: Boolean
+    val closeAfter: Boolean,
+    val wasReadBefore: Boolean,
+    val isReread: Boolean
 )
 
 internal data class BrowserLocalLibraryState(

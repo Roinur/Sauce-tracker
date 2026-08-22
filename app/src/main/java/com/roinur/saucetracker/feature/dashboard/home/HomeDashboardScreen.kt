@@ -58,7 +58,8 @@ internal fun ModernHomeDashboard(
     onOpenRandomEntry: (Int) -> Unit,
     onEntriesLongPress: (() -> Unit)? = null,
     onTagsLongPress: (() -> Unit)? = null,
-    onCreatorsLongPress: (() -> Unit)? = null
+    onCreatorsLongPress: (() -> Unit)? = null,
+    onHeatmapLongPress: (() -> Unit)? = null
 ) {
     val recentEntries = remember(vm.entries) {
         vm.entries
@@ -203,6 +204,7 @@ internal fun ModernHomeDashboard(
                 onOpenUpdates = onOpenSubscriptions,
                 onOpenList = onOpenSubscriptionsList,
                 onOpenHeatmap = onOpenHeatmap,
+                onHeatmapLongPress = onHeatmapLongPress,
                 onOpenHistory = onOpenHistory,
                 modifier = Modifier
                     .weight(1f)

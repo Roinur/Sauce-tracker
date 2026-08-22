@@ -521,7 +521,7 @@ internal fun HeatmapScreen(
                     GraphSegmentedTabs(
                         labels = TagGraphTab.entries.map { it.label },
                         selectedIndex = selectedTab.ordinal,
-                        onSelected = { onSelectTab(TagGraphTab.entries[it]) }
+                        onSelected = { index -> onSelectTab(TagGraphTab.entries[index]) }
                     )
                     if (selectedTab == TagGraphTab.HEATMAP) {
                         HeatmapModeTitles(

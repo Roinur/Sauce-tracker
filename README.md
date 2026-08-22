@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img alt="Release 1.8" src="https://img.shields.io/badge/release-1.8-8f9cff">
+  <img alt="Release 1.9" src="https://img.shields.io/badge/release-1.9-8f9cff">
   <img alt="Android 8.0+" src="https://img.shields.io/badge/Android-8.0%2B-3ddc84">
   <img alt="Kotlin and Compose" src="https://img.shields.io/badge/Kotlin-Compose-7f52ff">
   <img alt="Local first" src="https://img.shields.io/badge/data-local--first-4c9aff">
@@ -138,33 +138,97 @@ Sauce Tracker combines a searchable library, an integrated browser, reading hist
 
 > Screenshots were captured with Sauce Tracker's privacy masking enabled; private search terms, metadata, and thumbnails are obscured.
 
-## What is new in 1.8
+## What is new in 1.9
 
-Version 1.8 turns the 1.7 architecture into practical speed, discovery, and reliability improvements for large libraries.
+Version 1.9 adds deeper local trend analysis, explicit recommendation training, reusable composite filters, and library diagnostics while preserving the existing suggestion engine and local-first data model.
 
-- Added Sauce Finder: choose or share an image and search a local perceptual-hash index for its matching entry and page.
-- Made Sauce Finder incremental, pausable, bounded, and four-way parallel; existing hashes are reused and the real index size is shown in the UI.
-- Added Sauce Finder as the third discovery page beside Suggested and Random entries.
-- Rebuilt Suggested Entries around cached profiles, metadata, candidates, and results so repeat opens are substantially faster.
-- Restored cached Suggested Entry thumbnails after app restarts and made dashboard previews jump to the tapped recommendation.
-- Redesigned Suggested Entries cards, loading state, controls, swipe surfaces, and privacy masking to match the modern dashboard.
-- Added website-provided More like this recommendations to Browser detail pages, with real titles and direct navigation.
-- Fixed Browser comments repeating the author name instead of displaying the message, plus duplicate tag-count labels on affected tags.
-- Tightened Parts, More like this, and Same artist filtering: Parts remain filter-independent while other local recommendations respect Read/Unread context.
-- Refined Tag and Entry Heatmap presentation into the page layout while preserving nodes, layout behavior, pan, zoom, and thumbnail-zone controls.
-- Centralized library-change propagation so imports, deletes, ratings, reads, tags, subscriptions, heatmaps, and suggestions update coherently.
-- Kept thumbnail previews warm across updates and cold starts, and made tag counts reflect the active library filter atomically.
-- Made Today, Week, Month, Year, activity heatmaps, and reading-session day grouping follow the phone's local timezone while preserving UTC timestamps internally.
-- Hid already imported galleries from subscription updates and notification counts without removing them from complete backup history.
-- Added working dashboard page ordering in Personalization for Random, Suggested, and Sauce Finder, plus Subscriptions, Heatmap, and History.
-- Put entry-cycle, adaptive Home/Dashboard order, Browser, and default-sort controls directly inside the Personalization card, removing the duplicate order setting and intermediate overlay.
-- Further split the large Dashboard and Browser hosts into focused feature, parsing, media, duplicate, backup, download, and UI components.
-- Added a privacy-safe GitHub Media Mode with separate data, strong thumbnail masking, theme control, and capture tooling.
-- Added optional, direction-aware volume-button page navigation in Gallery Slideshow; vertical steps center middle pages while anchoring the first and last pages to their respective edges.
-- Prevented outside taps from dismissing Browser and local Gallery Slideshow rating prompts while preserving the global back gesture as a Skip action.
-- Moved the production Android identity to `com.roinur.saucetracker`, with full library and settings migration through export/import.
+<table>
+  <tr>
+    <th>Reading Trends</th>
+    <th>Unique Trends</th>
+    <th>Train your model</th>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/preview-1.9/reading-trends-compare.png" alt="Reading Trends comparison" width="260"></td>
+    <td><img src="docs/screenshots/preview-1.9/reading-trends-unique.png" alt="Unique Trends view" width="260"></td>
+    <td><img src="docs/screenshots/preview-1.9/train-your-model.png" alt="Train your model" width="260"></td>
+  </tr>
+  <tr>
+    <th>Tag Presets</th>
+    <th>Preset rules</th>
+    <th>Period insight</th>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/preview-1.9/tag-presets.png" alt="Tag Presets" width="260"></td>
+    <td><img src="docs/screenshots/preview-1.9/tag-preset-editor.png" alt="Tag Preset rule editor" width="260"></td>
+    <td><img src="docs/screenshots/preview-1.9/reading-trends-insight.png" alt="Reading Trends period insight" width="260"></td>
+  </tr>
+  <tr>
+    <th colspan="3">Choose comparisons</th>
+  </tr>
+  <tr>
+    <td colspan="3" align="center"><img src="docs/screenshots/preview-1.9/reading-trends-choose.png" alt="Reading Trends comparison picker" width="260"></td>
+  </tr>
+</table>
 
-See [CHANGELOG.md](CHANGELOG.md) for the complete release summary.
+- Added Reading Trends as a second full Heatmap Overview page with a swipe transition and a persistent floating page indicator.
+- Added over-time comparisons for tags and artists/groups across Today, Week, Month, Year, and All Time, with All Time as the default.
+- Added Reads and Share scales plus All, Positive, and average-rating signals.
+- Added draggable graph inspection, stable per-selection colors, gently smoothed lines, and support for one to five explicit comparisons.
+- Added Include misc for separating ordinary tags from language, category, parody, translated, doujinshi, and similar metadata.
+- Added View all for the complete local trend set with minimum Share or Reads filtering. Tag Share defaults to the tested 5 percent baseline.
+- Added metric-aware and sample-aware Unique Trends using core interests, metric standouts, and curve-shape outliers, while always retaining explicit user selections that pass the active minimum.
+- Added confidence adjustment for sparse Positive and average-rating results so a single extreme rating cannot dominate the graph.
+- Added a Reading History breakdown that distinguishes unique reads from rereads.
+- Reading Trends counts the original read in its original period and each reread once in the period when the reread happened.
+- Added privacy-safe graph text masking for GitHub Media Mode without hiding the graph geometry needed for visual QA.
+- Added ghosted graph refreshes so changing range, View all, or Compare no longer blanks and flashes the entire chart.
+- Made the Heatmap page indicator react continuously to swipe progress.
+- Preserved the deliberate Search Everything departure and return animation while safely cancelling an unfinished reveal during very fast reverse swipes.
+- Added configurable Heatmap Overview and Reading Trends page order in Personalization and through a long press on the dashboard Heatmap widget.
+- Made adaptive Reading Trends bins standard: six four-hour Today periods, daily Week periods, calendar-week Month periods, monthly Year periods, and adaptive long-range All Time periods.
+- Normalized quarterly, half-year, and yearly All Time Reads to a comparable 30-day rate while retaining real counts for Share, ratings, and explanations.
+- Added long-press trend insights from either a graph line or its legend title, with metric-specific change text and factual read/rating drivers for the selected period.
+- Improved graph long-press inspection with haptic feedback, a stronger tracked-period crosshair, drag-to-follow selection, and the final insight opening on release.
+- Hardened trend edge cases: empty rating periods retain the latest real average, tiny samples are identified, near-zero changes avoid misleading percentages, and partial first/current long-range buckets use their actually observed days for 30-day normalization.
+- Added Train your model as an optional complement to Suggested Entries: explain selected high and low ratings using ordinary tags, artists, and groups, while excluding language, category, and similar generic metadata.
+- Train your model resolves the displayed entry's complete current tag list before opening, keeps long tag lists internally scrollable, and preserves Skip and Save controls on smaller displays.
+- Training answers can record Not about metadata or Reason not listed, and saved answers can be reviewed or removed locally.
+- Kept the existing inferred suggestion profile, manual Tune controls, caches, network candidate search, and fallbacks as the primary recommendation engine; explicit training is bounded so it can clarify but never replace that system.
+- Added reusable Tag Presets with Include, Either, and Hide rules, editing, ordering, Search Everything suggestions, and direct application as a named local-library tag filter. Presets remain separate from imported tags and never enter heatmaps or trends.
+- GitHub Media Mode now masks sensitive titles, codes, training drivers, preset names, searches, and tag names in the new 1.9 dialogs.
+- Added Library Health with SQLite integrity checks, record and relation audits, rating and history consistency checks, document-permission checks, and validation of the new local training/preset stores.
+- Added Verified Restore diagnostics that restore the current procedural backup twice into an isolated temporary database and require the second pass to be idempotent, without touching the production library.
+- Fixed Browser slideshow rating prompts so already-read entries default to Re-read and create a separate reread session without overwriting the original rating.
+- Repaired Desktop Bridge HTTPS after the 1.8 credential rewrite by generating a unique software TLS key and self-signed certificate inside each installation's private no-backup storage instead of shipping one shared key in the APK.
+
+## Version museum
+
+<details>
+  <summary><strong>Open the Sauce Tracker release timeline</strong></summary>
+  <br>
+  <table>
+    <tr>
+      <th>Version</th>
+      <th>Release theme</th>
+    </tr>
+    <tr><td>1.0</td><td>The foundation: searchable local library, metadata import/export, creator navigation, ratings, backups, and the original Gecko-based browser.</td></tr>
+    <tr><td>1.1</td><td>Privacy and personal state: Incognito Mode, app lock, accent controls, read tracking, filters, and the browser-exit rating flow.</td></tr>
+    <tr><td>1.2</td><td>The native browser era: feeds, search sorting, comments, gallery slideshow, analytics, and removal of the heavyweight Gecko dependency.</td></tr>
+    <tr><td>1.3</td><td>Desktop Bridge: encrypted local-network library control, challenge unlocking, live desktop actions, filtering, sorting, and presentation controls.</td></tr>
+    <tr><td>1.4</td><td>Discovery: Suggested Entries, tunable recommendation weights, subscriptions, richer browser gestures, and expanded library interaction.</td></tr>
+    <tr><td>1.4.5</td><td>Polish and responsiveness: smoother browser transitions and gestures, indexed duplicate checks, and backup-backed thumbnail reuse.</td></tr>
+    <tr><td>1.5</td><td>Visual exploration and offline reading: Tag and Entry Heatmaps, saved layouts, local gallery downloads, and local slideshow sources.</td></tr>
+    <tr><td>1.6</td><td>The modern dashboard: dedicated library pages, Reading History, responsive widgets, and the batched thumbnail pipeline that transformed scrolling performance.</td></tr>
+    <tr><td>1.7</td><td>Architecture and reliability: the structured rewrite, Selected Entry relationships, rolling backups, resilient Browser state, and bounded Heatmap thumbnails.</td></tr>
+    <tr><td>1.8</td><td>Large-library discovery: Sauce Finder, persistent and faster suggestions, dashboard ordering, package migration, privacy tooling, and deeper feature extraction.</td></tr>
+    <tr><td>1.9</td><td>Local intelligence: Reading Trends, Unique Trends, Train your model, Tag Presets, Library Health, and Verified Restore diagnostics.</td></tr>
+  </table>
+
+  Historical APKs are preserved as museum builds in GitHub Releases. Versions 1.0 through 1.7 use the former `com.example.saucetracker` identity; versions 1.8 and newer use `com.roinur.saucetracker`. Older builds may contain obsolete network behavior and database schemas, so export current data before experimenting with them.
+</details>
+
+See [CHANGELOG.md](CHANGELOG.md) for the detailed 1.7 through 1.9 history and each GitHub Release for its reconstructed period notes.
 
 ## Features
 
@@ -200,16 +264,16 @@ See [CHANGELOG.md](CHANGELOG.md) for the complete release summary.
 
 ## Download and install
 
-Download `Sauce-Tracker-1.8-release.apk` and its checksum from the [latest GitHub Release](../../releases/latest).
+Download `Sauce-Tracker-1.9-release.apk` and its checksum from the [latest GitHub Release](../../releases/latest).
 
 Android 8.0 (API 26) or newer is required.
 
-Version 1.8 uses the new `com.roinur.saucetracker` Android identity. Android therefore installs it beside builds using the former package rather than updating them in place. Create a fresh export in the former app, import it into the new app, reselect Android document folders, and verify the result before uninstalling the former app.
+Version 1.8 introduced the current `com.roinur.saucetracker` Android identity, which 1.9 updates in place. Android installs it beside older builds that used the former package. When migrating from that former package, create a fresh export in the old app, import it into the current app, reselect Android document folders, and verify the result before uninstalling the old app.
 
 To install with ADB:
 
 ```powershell
-adb install -r Sauce-Tracker-1.8-release.apk
+adb install -r Sauce-Tracker-1.9-release.apk
 ```
 
 Android may require permission to install apps from the file manager or browser used to open the APK. Back up important library data before replacing an older or differently signed build.
@@ -268,8 +332,8 @@ The package root is `com.roinur.saucetracker`. The modular layout keeps feature-
 
 Official releases should include:
 
-- `Sauce-Tracker-1.8-release.apk`
-- `Sauce-Tracker-1.8-release.apk.sha256`
+- `Sauce-Tracker-1.9-release.apk`
+- `Sauce-Tracker-1.9-release.apk.sha256`
 - release notes matching [CHANGELOG.md](CHANGELOG.md)
 
 Verify the checksum before sideloading when the APK was downloaded through a third party.
@@ -281,3 +345,5 @@ Issues should include the app version, Android version, exact screen and action,
 ## License
 
 No public source-code license has been selected. Until a license is added, copyright remains with the project owner and the source is not granted for redistribution.
+
+Third-party components retain their own licenses. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), including the Bouncy Castle components used to create Desktop Bridge's per-installation TLS certificate.

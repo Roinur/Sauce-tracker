@@ -22,16 +22,31 @@ import com.roinur.saucetracker.data.database.dao.SqliteTagDao
 import com.roinur.saucetracker.data.database.dao.SubscriptionDao
 import com.roinur.saucetracker.data.database.dao.TagDao
 import com.roinur.saucetracker.data.database.entity.RelatedEntryEntity
+import com.roinur.saucetracker.feature.heatmap.TrendBucketGranularity
+import com.roinur.saucetracker.feature.heatmap.TrendBucketMode
+import com.roinur.saucetracker.feature.heatmap.TrendPoint
+import com.roinur.saucetracker.feature.heatmap.TrendRequest
+import com.roinur.saucetracker.feature.heatmap.TrendSeries
+import com.roinur.saucetracker.feature.heatmap.TrendSnapshot
+import com.roinur.saucetracker.feature.heatmap.TrendTarget
+import com.roinur.saucetracker.feature.heatmap.TrendTargetKind
+import com.roinur.saucetracker.feature.heatmap.thirtyDayRateFactor
 import org.json.JSONArray
 import org.json.JSONObject
 import java.time.Instant
 import java.time.LocalDate
+import java.time.YearMonth
 import java.time.ZoneOffset
+import java.time.format.DateTimeFormatter
+import java.time.temporal.ChronoUnit
 import java.util.Locale
 
-class SauceTrackerDatabase(private val appContext: Context) : SQLiteOpenHelper(
+class SauceTrackerDatabase(
+    private val appContext: Context,
+    private val databaseNameOverride: String? = null
+) : SQLiteOpenHelper(
     appContext,
-    GitHubMediaSession.databaseName(),
+    databaseNameOverride ?: GitHubMediaSession.databaseName(),
     null,
     DatabaseSchema.VERSION
 ) {
@@ -43,7 +58,9 @@ class SauceTrackerDatabase(private val appContext: Context) : SQLiteOpenHelper(
     internal val heatmapCacheDao: HeatmapCacheDao by lazy { SqliteHeatmapCacheDao(this) }
     init {
         migrateSchema(writableDatabase)
-        GitHubMediaSession.populateFromProductionIfNeeded(appContext, writableDatabase)
+        if (databaseNameOverride == null) {
+            GitHubMediaSession.populateFromProductionIfNeeded(appContext, writableDatabase)
+        }
     }
 
     override fun onConfigure(db: SQLiteDatabase) {
@@ -572,8 +589,6 @@ class SauceTrackerDatabase(private val appContext: Context) : SQLiteOpenHelper(
                 db.insertOrThrow("entries", null, values)
             }
 
-            db.delete("entry_tags", "entry_code = ?", arrayOf(gallery.code.toString()))
-
             val deduped = LinkedHashMap<Pair<String, String>, GalleryTag>()
             gallery.tags.forEach { tag ->
                 val normalized = normalizeTagName(tag.name)
@@ -582,23 +597,28 @@ class SauceTrackerDatabase(private val appContext: Context) : SQLiteOpenHelper(
                 deduped[normalized to type] = GalleryTag(name = tag.name.trim(), type = type)
             }
 
-            deduped.forEach { (key, tag) ->
-                val normalizedName = key.first
-                val type = key.second
+            // A partial Browser/API response can legitimately contain metadata but no tags.
+            // Never let that transient response erase the local entry's complete tag set.
+            if (deduped.isNotEmpty()) {
+                db.delete("entry_tags", "entry_code = ?", arrayOf(gallery.code.toString()))
+                deduped.forEach { (key, tag) ->
+                    val normalizedName = key.first
+                    val type = key.second
 
-                val tagValues = ContentValues().apply {
-                    put("name", tag.name)
-                    put("type", type)
-                    put("normalized_name", normalizedName)
-                }
-                db.insertWithOnConflict("tags", null, tagValues, SQLiteDatabase.CONFLICT_IGNORE)
+                    val tagValues = ContentValues().apply {
+                        put("name", tag.name)
+                        put("type", type)
+                        put("normalized_name", normalizedName)
+                    }
+                    db.insertWithOnConflict("tags", null, tagValues, SQLiteDatabase.CONFLICT_IGNORE)
 
-                val tagId = findTagId(db, normalizedName, type) ?: return@forEach
-                val linkValues = ContentValues().apply {
-                    put("entry_code", gallery.code)
-                    put("tag_id", tagId)
+                    val tagId = findTagId(db, normalizedName, type) ?: return@forEach
+                    val linkValues = ContentValues().apply {
+                        put("entry_code", gallery.code)
+                        put("tag_id", tagId)
+                    }
+                    db.insertWithOnConflict("entry_tags", null, linkValues, SQLiteDatabase.CONFLICT_IGNORE)
                 }
-                db.insertWithOnConflict("entry_tags", null, linkValues, SQLiteDatabase.CONFLICT_IGNORE)
             }
 
             cleanupOrphanTags(db)
@@ -721,9 +741,12 @@ class SauceTrackerDatabase(private val appContext: Context) : SQLiteOpenHelper(
         val topCreators = linkedMapOf<StatsRange, List<AnalyticsCountRow>>()
         val dailyActivity = linkedMapOf<StatsRange, List<DailyActivityPoint>>()
         val readingSpeed = linkedMapOf<StatsRange, ReadingSpeedStats>()
+        val readBreakdowns = linkedMapOf<StatsRange, ReadCountBreakdown>()
 
         StatsRange.entries.forEach { range ->
-            readCounts[range] = queryReadCount(range)
+            val breakdown = queryReadCountBreakdown(range)
+            readBreakdowns[range] = breakdown
+            readCounts[range] = breakdown.total
             pagesRead[range] = queryPagesRead(range)
             averageRatings[range] = queryAverageReadRating(range)
             topTags[range] = queryTopReadTags(range, safeTagLimit)
@@ -739,7 +762,8 @@ class SauceTrackerDatabase(private val appContext: Context) : SQLiteOpenHelper(
             topTags = topTags,
             topCreators = topCreators,
             dailyActivity = dailyActivity,
-            readingSpeed = readingSpeed
+            readingSpeed = readingSpeed,
+            readBreakdowns = readBreakdowns
         )
     }
 
@@ -761,27 +785,25 @@ class SauceTrackerDatabase(private val appContext: Context) : SQLiteOpenHelper(
         return " AND $dateExpr BETWEEN ? AND ?" to listOf(bounds.first, bounds.second)
     }
 
-    private fun queryReadCount(range: StatsRange): Int {
+    private fun queryReadCountBreakdown(range: StatsRange): ReadCountBreakdown {
         val (entryRangeSql, entryRangeArgs) = readRangeClause(range, alias = "e")
         val (sessionRangeSql, sessionRangeArgs) = readRangeClauseForUtcTimestamp(range, "s.started_at")
         val sql = """
-            SELECT COUNT(*)
-            FROM (
-                SELECT e.code
-                FROM entries e
-                WHERE COALESCE(e.read_state, 0) = 1$entryRangeSql
-                UNION ALL
-                SELECT s.id
-                FROM reading_sessions s
-                WHERE COALESCE(s.is_reread, 0) = 1$sessionRangeSql
-            ) reads
+            SELECT
+                (SELECT COUNT(*) FROM entries e
+                 WHERE COALESCE(e.read_state, 0) = 1$entryRangeSql) AS unique_entries,
+                (SELECT COUNT(*) FROM reading_sessions s
+                 WHERE COALESCE(s.is_reread, 0) = 1$sessionRangeSql) AS rereads
         """.trimIndent()
         readableDatabase.rawQuery(sql, (entryRangeArgs + sessionRangeArgs).toTypedArray()).use { cursor ->
             if (cursor.moveToFirst()) {
-                return cursor.getInt(0)
+                return ReadCountBreakdown(
+                    uniqueEntries = cursor.getInt(cursor.getColumnIndexOrThrow("unique_entries")).coerceAtLeast(0),
+                    rereads = cursor.getInt(cursor.getColumnIndexOrThrow("rereads")).coerceAtLeast(0)
+                )
             }
         }
-        return 0
+        return ReadCountBreakdown()
     }
 
     private fun queryPagesRead(range: StatsRange): Int {
@@ -882,6 +904,446 @@ class SauceTrackerDatabase(private val appContext: Context) : SQLiteOpenHelper(
             }
         }
         return rows
+    }
+
+    fun listTrendTargets(kind: TrendTargetKind, includeMisc: Boolean): List<TrendTarget> {
+        val typeClause = trendTargetClause(kind, includeMisc)
+        val targetIdExpression = trendTargetIdExpression(kind)
+        val targetNameExpression = if (kind == TrendTargetKind.CREATORS) "MIN(t.name)" else "t.name"
+        val targetTypeExpression = if (kind == TrendTargetKind.CREATORS) "'creator'" else "t.type"
+        val targetGroupExpression = trendTargetGroupExpression(kind)
+        val sql = """
+            SELECT $targetIdExpression AS id, $targetNameExpression AS name,
+                   $targetTypeExpression AS type, COUNT(DISTINCT et.entry_code) AS entry_count
+            FROM tags t
+            JOIN entry_tags et ON et.tag_id = t.id
+            WHERE $typeClause
+            GROUP BY $targetGroupExpression
+            ORDER BY entry_count DESC, LOWER(name) ASC
+        """.trimIndent()
+        val rows = mutableListOf<TrendTarget>()
+        readableDatabase.rawQuery(sql, null).use { cursor ->
+            val idIndex = cursor.getColumnIndexOrThrow("id")
+            val nameIndex = cursor.getColumnIndexOrThrow("name")
+            val typeIndex = cursor.getColumnIndexOrThrow("type")
+            val countIndex = cursor.getColumnIndexOrThrow("entry_count")
+            while (cursor.moveToNext()) {
+                rows += TrendTarget(
+                    id = cursor.getLong(idIndex),
+                    name = cursor.getString(nameIndex)?.trim().orEmpty(),
+                    type = cursor.getString(typeIndex)?.trim().orEmpty(),
+                    entryCount = cursor.getInt(countIndex).coerceAtLeast(0)
+                )
+            }
+        }
+        return rows
+    }
+
+    fun getTrendSnapshot(request: TrendRequest): TrendSnapshot {
+        val targetIds = request.targetIds.asSequence().filter { it > 0L }.distinct().take(5).toList()
+        val granularity = trendGranularity(request.range, request.bucketMode)
+        if (!request.viewAll && targetIds.isEmpty()) {
+            return TrendSnapshot(
+                range = request.range,
+                granularity = granularity,
+                buckets = emptyList(),
+                series = emptyList()
+            )
+        }
+
+        val readEventsCte = """
+            WITH read_events AS (
+                SELECT 'entry:' || e.code AS event_id,
+                       e.code AS entry_code,
+                       COALESCE(NULLIF(e.read_at, ''), e.added_at) AS read_timestamp,
+                       COALESCE(e.rating, 0) AS rating
+                FROM entries e
+                WHERE COALESCE(e.read_state, 0) = 1
+
+                UNION ALL
+
+                SELECT 'reread:' || s.id AS event_id,
+                       s.entry_code AS entry_code,
+                       s.started_at AS read_timestamp,
+                       COALESCE(s.rating, 0) AS rating
+                FROM reading_sessions s
+                JOIN entries e ON e.code = s.entry_code
+                WHERE COALESCE(s.is_reread, 0) = 1
+            )
+        """.trimIndent()
+        val timestampExpression = "re.read_timestamp"
+        val dateExpression = localCalendarDateSql(timestampExpression)
+        val bucketSourceExpression = if (granularity == TrendBucketGranularity.FOUR_HOURS) {
+            "datetime($timestampExpression, 'localtime')"
+        } else {
+            dateExpression
+        }
+        val bucketExpression = trendBucketSql(bucketSourceExpression, granularity)
+        val rangeBounds = readDateRange(request.range)
+        val rangeSql = if (rangeBounds == null) "" else " AND $dateExpression BETWEEN ? AND ?"
+        val rangeArgs = rangeBounds?.let { listOf(it.first, it.second) }.orEmpty()
+        val targetPlaceholders = targetIds.joinToString(",") { "?" }
+        val targetIdExpression = trendTargetIdExpression(request.targetKind)
+        val targetGroupExpression = trendTargetGroupExpression(request.targetKind)
+        val targetFilterSql = if (request.viewAll) {
+            trendTargetClause(request.targetKind, request.includeMisc)
+        } else {
+            "$targetIdExpression IN ($targetPlaceholders)"
+        }
+        val targetFilterArgs = if (request.viewAll) emptyList() else targetIds.map(Long::toString)
+
+        val totalsByBucket = linkedMapOf<String, Int>()
+        val totalsSql = """
+            $readEventsCte
+            SELECT $bucketExpression AS bucket_key, COUNT(DISTINCT re.event_id) AS total_reads
+            FROM read_events re
+            WHERE 1 = 1$rangeSql
+            GROUP BY bucket_key
+            ORDER BY bucket_key ASC
+        """.trimIndent()
+        readableDatabase.rawQuery(totalsSql, rangeArgs.toTypedArray()).use { cursor ->
+            val bucketIndex = cursor.getColumnIndexOrThrow("bucket_key")
+            val totalIndex = cursor.getColumnIndexOrThrow("total_reads")
+            while (cursor.moveToNext()) {
+                val key = cursor.getString(bucketIndex)?.trim().orEmpty()
+                if (key.isNotBlank()) totalsByBucket[key] = cursor.getInt(totalIndex).coerceAtLeast(0)
+            }
+        }
+
+        val targetMetadataSql = """
+            SELECT $targetIdExpression AS id,
+                   ${if (request.targetKind == TrendTargetKind.CREATORS) "MIN(t.name)" else "t.name"} AS name,
+                   ${if (request.targetKind == TrendTargetKind.CREATORS) "'creator'" else "t.type"} AS type,
+                   COUNT(DISTINCT et.entry_code) AS entry_count
+            FROM tags t
+            JOIN entry_tags et ON et.tag_id = t.id
+            WHERE $targetFilterSql
+            GROUP BY $targetGroupExpression
+            ORDER BY entry_count DESC, LOWER(name) ASC
+        """.trimIndent()
+        val targetOrder = mutableListOf<Long>()
+        val targetsById = linkedMapOf<Long, TrendTarget>()
+        readableDatabase.rawQuery(targetMetadataSql, targetFilterArgs.toTypedArray()).use { cursor ->
+            val idIndex = cursor.getColumnIndexOrThrow("id")
+            val nameIndex = cursor.getColumnIndexOrThrow("name")
+            val typeIndex = cursor.getColumnIndexOrThrow("type")
+            val countIndex = cursor.getColumnIndexOrThrow("entry_count")
+            while (cursor.moveToNext()) {
+                val target = TrendTarget(
+                    id = cursor.getLong(idIndex),
+                    name = cursor.getString(nameIndex)?.trim().orEmpty(),
+                    type = cursor.getString(typeIndex)?.trim().orEmpty(),
+                    entryCount = cursor.getInt(countIndex).coerceAtLeast(0)
+                )
+                targetsById[target.id] = target
+                targetOrder += target.id
+            }
+        }
+        val pointsByTarget = mutableMapOf<Long, LinkedHashMap<String, TrendPoint>>()
+        if (!request.viewAll) {
+            targetIds.forEach { pointsByTarget[it] = linkedMapOf() }
+        }
+        val seriesSql = """
+            $readEventsCte
+            SELECT
+                $targetIdExpression AS target_id,
+                $bucketExpression AS bucket_key,
+                COUNT(DISTINCT re.event_id) AS matching_reads,
+                COUNT(DISTINCT CASE WHEN re.rating >= 4 THEN re.event_id END) AS positive_ratings,
+                COUNT(DISTINCT CASE WHEN re.rating > 0 THEN re.event_id END) AS rated_entries,
+                SUM(CASE WHEN re.rating > 0 THEN CAST(re.rating AS REAL) ELSE 0 END) AS rating_sum,
+                AVG(CASE WHEN re.rating > 0 THEN CAST(re.rating AS REAL) END) AS average_rating,
+                COUNT(DISTINCT CASE WHEN re.rating = 1 THEN re.event_id END) AS rating_1_count,
+                COUNT(DISTINCT CASE WHEN re.rating = 2 THEN re.event_id END) AS rating_2_count,
+                COUNT(DISTINCT CASE WHEN re.rating = 3 THEN re.event_id END) AS rating_3_count,
+                COUNT(DISTINCT CASE WHEN re.rating = 4 THEN re.event_id END) AS rating_4_count,
+                COUNT(DISTINCT CASE WHEN re.rating = 5 THEN re.event_id END) AS rating_5_count
+            FROM read_events re
+            JOIN entry_tags et ON et.entry_code = re.entry_code
+            JOIN tags t ON t.id = et.tag_id
+            WHERE $targetFilterSql$rangeSql
+            GROUP BY $targetGroupExpression, bucket_key
+            ORDER BY bucket_key ASC
+        """.trimIndent()
+        val seriesArgs = targetFilterArgs + rangeArgs
+        readableDatabase.rawQuery(seriesSql, seriesArgs.toTypedArray()).use { cursor ->
+            val targetIndex = cursor.getColumnIndexOrThrow("target_id")
+            val bucketIndex = cursor.getColumnIndexOrThrow("bucket_key")
+            val matchingIndex = cursor.getColumnIndexOrThrow("matching_reads")
+            val positiveIndex = cursor.getColumnIndexOrThrow("positive_ratings")
+            val ratedIndex = cursor.getColumnIndexOrThrow("rated_entries")
+            val ratingSumIndex = cursor.getColumnIndexOrThrow("rating_sum")
+            val averageIndex = cursor.getColumnIndexOrThrow("average_rating")
+            val rating1Index = cursor.getColumnIndexOrThrow("rating_1_count")
+            val rating2Index = cursor.getColumnIndexOrThrow("rating_2_count")
+            val rating3Index = cursor.getColumnIndexOrThrow("rating_3_count")
+            val rating4Index = cursor.getColumnIndexOrThrow("rating_4_count")
+            val rating5Index = cursor.getColumnIndexOrThrow("rating_5_count")
+            while (cursor.moveToNext()) {
+                val targetId = cursor.getLong(targetIndex)
+                val bucket = cursor.getString(bucketIndex)?.trim().orEmpty()
+                if (bucket.isBlank()) continue
+                pointsByTarget.getOrPut(targetId) { linkedMapOf() }[bucket] =
+                    TrendPoint(
+                        bucketKey = bucket,
+                        matchingReads = cursor.getInt(matchingIndex).coerceAtLeast(0),
+                        totalReads = totalsByBucket[bucket] ?: 0,
+                        positiveRatings = cursor.getInt(positiveIndex).coerceAtLeast(0),
+                        ratedEntries = cursor.getInt(ratedIndex).coerceAtLeast(0),
+                        ratingSum = if (cursor.isNull(ratingSumIndex)) 0f else cursor.getFloat(ratingSumIndex).coerceAtLeast(0f),
+                        averageRating = if (cursor.isNull(averageIndex)) 0f else cursor.getFloat(averageIndex).coerceIn(0f, 5f),
+                        rating1Count = cursor.getInt(rating1Index).coerceAtLeast(0),
+                        rating2Count = cursor.getInt(rating2Index).coerceAtLeast(0),
+                        rating3Count = cursor.getInt(rating3Index).coerceAtLeast(0),
+                        rating4Count = cursor.getInt(rating4Index).coerceAtLeast(0),
+                        rating5Count = cursor.getInt(rating5Index).coerceAtLeast(0)
+                    )
+            }
+        }
+
+        val buckets = continuousTrendBuckets(request.range, granularity, totalsByBucket.keys)
+        val earliestReadDate = if (request.range == StatsRange.ALL_TIME) earliestReadCalendarDate() else null
+        val resolvedTargetOrder = if (request.viewAll) {
+            targetOrder.filter { pointsByTarget.containsKey(it) }
+        } else {
+            targetIds
+        }
+        val series = resolvedTargetOrder.mapNotNull { targetId ->
+            val target = targetsById[targetId] ?: return@mapNotNull null
+            val recorded = pointsByTarget[targetId].orEmpty()
+            TrendSeries(
+                target = target,
+                points = buckets.map { bucket ->
+                    (recorded[bucket] ?: TrendPoint(
+                        bucketKey = bucket,
+                        matchingReads = 0,
+                        totalReads = totalsByBucket[bucket] ?: 0,
+                        positiveRatings = 0,
+                        ratedEntries = 0,
+                        ratingSum = 0f,
+                        averageRating = 0f,
+                        rating1Count = 0,
+                        rating2Count = 0,
+                        rating3Count = 0,
+                        rating4Count = 0,
+                        rating5Count = 0
+                    )).copy(
+                        readNormalizationFactor = trendReadNormalizationFactor(
+                            bucket = bucket,
+                            granularity = granularity,
+                            earliestReadDate = earliestReadDate
+                        )
+                    )
+                }
+            )
+        }
+        return TrendSnapshot(
+            range = request.range,
+            granularity = granularity,
+            buckets = buckets,
+            series = series
+        )
+    }
+
+    private fun trendTargetClause(kind: TrendTargetKind, includeMisc: Boolean): String = when (kind) {
+        TrendTargetKind.TAGS -> if (includeMisc) {
+            "t.type NOT IN ('artist', 'group')"
+        } else {
+            "t.type = 'tag'"
+        }
+        TrendTargetKind.CREATORS -> "t.type IN ('artist', 'group')"
+    }
+
+    private fun trendTargetNormalizedNameExpression(alias: String): String =
+        "COALESCE(NULLIF($alias.normalized_name, ''), LOWER(TRIM($alias.name)))"
+
+    private fun trendTargetIdExpression(kind: TrendTargetKind): String = when (kind) {
+        TrendTargetKind.TAGS -> "t.id"
+        TrendTargetKind.CREATORS -> """
+            (SELECT MIN(t2.id)
+             FROM tags t2
+             WHERE t2.type IN ('artist', 'group')
+               AND ${trendTargetNormalizedNameExpression("t2")} = ${trendTargetNormalizedNameExpression("t")})
+        """.trimIndent()
+    }
+
+    private fun trendTargetGroupExpression(kind: TrendTargetKind): String = when (kind) {
+        TrendTargetKind.TAGS -> "t.id, t.name, t.type"
+        TrendTargetKind.CREATORS -> trendTargetNormalizedNameExpression("t")
+    }
+
+    private fun trendGranularity(
+        range: StatsRange,
+        mode: TrendBucketMode
+    ): TrendBucketGranularity {
+        if (mode == TrendBucketMode.LEGACY) {
+            return when (range) {
+                StatsRange.TODAY, StatsRange.WEEK, StatsRange.MONTH -> TrendBucketGranularity.DAY
+                StatsRange.YEAR, StatsRange.ALL_TIME -> TrendBucketGranularity.MONTH
+            }
+        }
+        return when (range) {
+            StatsRange.TODAY -> TrendBucketGranularity.FOUR_HOURS
+            StatsRange.WEEK -> TrendBucketGranularity.DAY
+            StatsRange.MONTH -> TrendBucketGranularity.WEEK
+            StatsRange.YEAR -> TrendBucketGranularity.MONTH
+            StatsRange.ALL_TIME -> adaptiveAllTimeGranularity()
+        }
+    }
+
+    private fun adaptiveAllTimeGranularity(): TrendBucketGranularity {
+        val earliest = earliestReadCalendarDate() ?: return TrendBucketGranularity.MONTH
+        val months = ChronoUnit.MONTHS.between(
+            YearMonth.from(earliest),
+            YearMonth.from(UserCalendar.today())
+        ) + 1L
+        return when {
+            months <= 18L -> TrendBucketGranularity.MONTH
+            months <= 48L -> TrendBucketGranularity.QUARTER
+            months <= 96L -> TrendBucketGranularity.HALF_YEAR
+            else -> TrendBucketGranularity.YEAR
+        }
+    }
+
+    private fun earliestReadCalendarDate(): LocalDate? {
+        val entryDateExpression = localCalendarDateSql("COALESCE(NULLIF(read_at, ''), added_at)")
+        val sessionDateExpression = localCalendarDateSql("started_at")
+        return readableDatabase.rawQuery(
+            """
+                SELECT MIN(read_date)
+                FROM (
+                    SELECT $entryDateExpression AS read_date
+                    FROM entries
+                    WHERE COALESCE(read_state, 0) = 1
+                    UNION ALL
+                    SELECT $sessionDateExpression AS read_date
+                    FROM reading_sessions
+                    WHERE COALESCE(is_reread, 0) = 1
+                )
+            """.trimIndent(),
+            emptyArray()
+        ).use { cursor ->
+            if (!cursor.moveToFirst()) return@use null
+            cursor.getString(0)?.let { runCatching { LocalDate.parse(it) }.getOrNull() }
+        }
+    }
+
+    private fun trendBucketSql(dateExpression: String, granularity: TrendBucketGranularity): String = when (granularity) {
+        TrendBucketGranularity.FOUR_HOURS ->
+            "printf('%s %02d', date($dateExpression), (CAST(strftime('%H', $dateExpression) AS INTEGER) / 4) * 4)"
+        TrendBucketGranularity.DAY -> "strftime('%Y-%m-%d', $dateExpression)"
+        TrendBucketGranularity.WEEK ->
+            "date($dateExpression, '-' || ((CAST(strftime('%w', $dateExpression) AS INTEGER) + 6) % 7) || ' days')"
+        TrendBucketGranularity.MONTH -> "strftime('%Y-%m', $dateExpression)"
+        TrendBucketGranularity.QUARTER ->
+            "printf('%04d-Q%d', CAST(strftime('%Y', $dateExpression) AS INTEGER), ((CAST(strftime('%m', $dateExpression) AS INTEGER) - 1) / 3) + 1)"
+        TrendBucketGranularity.HALF_YEAR ->
+            "printf('%04d-H%d', CAST(strftime('%Y', $dateExpression) AS INTEGER), ((CAST(strftime('%m', $dateExpression) AS INTEGER) - 1) / 6) + 1)"
+        TrendBucketGranularity.YEAR -> "strftime('%Y', $dateExpression)"
+    }
+
+    private fun continuousTrendBuckets(
+        range: StatsRange,
+        granularity: TrendBucketGranularity,
+        recordedBuckets: Collection<String>
+    ): List<String> {
+        val today = UserCalendar.today()
+        return when (granularity) {
+            TrendBucketGranularity.FOUR_HOURS -> (0..20 step 4).map { hour ->
+                "${today.format(UPLOAD_DATE_FORMAT)} ${hour.toString().padStart(2, '0')}"
+            }
+            TrendBucketGranularity.DAY -> {
+                val start = when (range) {
+                    StatsRange.TODAY -> today
+                    StatsRange.WEEK -> today.minusDays(6)
+                    StatsRange.MONTH -> today.withDayOfMonth(1)
+                    StatsRange.YEAR -> today.withDayOfYear(1)
+                    StatsRange.ALL_TIME -> recordedBuckets.minOrNull()?.let(LocalDate::parse) ?: today
+                }
+                generateSequence(start) { current -> current.plusDays(1).takeIf { it <= today } }
+                    .map { it.format(UPLOAD_DATE_FORMAT) }
+                    .toList()
+            }
+            TrendBucketGranularity.WEEK -> {
+                val firstOfMonth = today.withDayOfMonth(1)
+                val start = firstOfMonth.minusDays(((firstOfMonth.dayOfWeek.value - 1) % 7).toLong())
+                generateSequence(start) { current -> current.plusWeeks(1).takeIf { it <= today } }
+                    .map { it.format(UPLOAD_DATE_FORMAT) }
+                    .toList()
+            }
+            TrendBucketGranularity.MONTH -> {
+                val currentMonth = today.withDayOfMonth(1)
+                val start = when (range) {
+                    StatsRange.YEAR -> today.withDayOfYear(1).withDayOfMonth(1)
+                    StatsRange.ALL_TIME -> recordedBuckets.minOrNull()
+                        ?.let { runCatching { LocalDate.parse("$it-01") }.getOrNull() }
+                        ?: currentMonth
+                    else -> currentMonth
+                }
+                generateSequence(start) { current -> current.plusMonths(1).takeIf { it <= currentMonth } }
+                    .map { it.format(DateTimeFormatter.ofPattern("yyyy-MM", Locale.US)) }
+                    .toList()
+            }
+            TrendBucketGranularity.QUARTER -> {
+                val first = recordedBuckets.minOrNull()?.let(::parseQuarterStart)
+                    ?: today.withDayOfYear(1)
+                val current = LocalDate.of(today.year, ((today.monthValue - 1) / 3) * 3 + 1, 1)
+                generateSequence(first) { value -> value.plusMonths(3).takeIf { it <= current } }
+                    .map { value -> "${value.year}-Q${((value.monthValue - 1) / 3) + 1}" }
+                    .toList()
+            }
+            TrendBucketGranularity.HALF_YEAR -> {
+                val first = recordedBuckets.minOrNull()?.let(::parseHalfYearStart)
+                    ?: today.withDayOfYear(1)
+                val current = LocalDate.of(today.year, if (today.monthValue <= 6) 1 else 7, 1)
+                generateSequence(first) { value -> value.plusMonths(6).takeIf { it <= current } }
+                    .map { value -> "${value.year}-H${if (value.monthValue <= 6) 1 else 2}" }
+                    .toList()
+            }
+            TrendBucketGranularity.YEAR -> {
+                val firstYear = recordedBuckets.minOrNull()?.toIntOrNull() ?: today.year
+                (firstYear..today.year).map(Int::toString)
+            }
+        }
+    }
+
+    private fun parseQuarterStart(key: String): LocalDate? = runCatching {
+        val parts = key.split("-Q")
+        LocalDate.of(parts[0].toInt(), (parts[1].toInt() - 1) * 3 + 1, 1)
+    }.getOrNull()
+
+    private fun parseHalfYearStart(key: String): LocalDate? = runCatching {
+        val parts = key.split("-H")
+        LocalDate.of(parts[0].toInt(), if (parts[1].toInt() == 1) 1 else 7, 1)
+    }.getOrNull()
+
+    private fun trendReadNormalizationFactor(
+        bucket: String,
+        granularity: TrendBucketGranularity,
+        earliestReadDate: LocalDate?
+    ): Float {
+        val (bucketStart, bucketEndExclusive) = when (granularity) {
+            TrendBucketGranularity.QUARTER -> {
+                val start = parseQuarterStart(bucket) ?: return 1f
+                start to start.plusMonths(3)
+            }
+            TrendBucketGranularity.HALF_YEAR -> {
+                val start = parseHalfYearStart(bucket) ?: return 1f
+                start to start.plusMonths(6)
+            }
+            TrendBucketGranularity.YEAR -> {
+                val year = bucket.toIntOrNull() ?: return 1f
+                val start = LocalDate.of(year, 1, 1)
+                start to start.plusYears(1)
+            }
+            else -> return 1f
+        }
+        return thirtyDayRateFactor(
+            bucketStart = bucketStart,
+            bucketEndExclusive = bucketEndExclusive,
+            earliestObservedDate = earliestReadDate,
+            today = UserCalendar.today()
+        )
     }
 
     fun getTagGraphDataSnapshot(): TagGraphDataSnapshot {
@@ -2420,6 +2882,60 @@ class SauceTrackerDatabase(private val appContext: Context) : SQLiteOpenHelper(
                     args += term
                     args += term
                 }
+                "anytag" -> {
+                    val names = value.split('|').map { it.trim() }.filter { it.isNotBlank() }.distinct()
+                    if (names.isNotEmpty()) {
+                        whereClauses += """
+                            EXISTS (
+                                SELECT 1 FROM entry_tags etf
+                                JOIN tags tf ON tf.id = etf.tag_id
+                                WHERE etf.entry_code = e.code
+                                  AND (${names.joinToString(" OR ") { "tf.name LIKE ?" }})
+                            )
+                        """.trimIndent()
+                        names.forEach { args += "%$it%" }
+                    }
+                }
+                "anytagid" -> {
+                    val ids = value.split('|').mapNotNull { it.trim().toLongOrNull()?.takeIf { id -> id > 0L } }.distinct()
+                    if (ids.isNotEmpty()) {
+                        whereClauses += """
+                            EXISTS (
+                                SELECT 1 FROM entry_tags etf
+                                WHERE etf.entry_code = e.code
+                                  AND etf.tag_id IN (${ids.joinToString(",") { "?" }})
+                            )
+                        """.trimIndent()
+                        ids.forEach { args += it.toString() }
+                    }
+                }
+                "excludetag" -> {
+                    val names = value.split('|').map { it.trim() }.filter { it.isNotBlank() }.distinct()
+                    if (names.isNotEmpty()) {
+                        whereClauses += """
+                            NOT EXISTS (
+                                SELECT 1 FROM entry_tags etf
+                                JOIN tags tf ON tf.id = etf.tag_id
+                                WHERE etf.entry_code = e.code
+                                  AND (${names.joinToString(" OR ") { "tf.name LIKE ?" }})
+                            )
+                        """.trimIndent()
+                        names.forEach { args += "%$it%" }
+                    }
+                }
+                "excludetagid" -> {
+                    val ids = value.split('|').mapNotNull { it.trim().toLongOrNull()?.takeIf { id -> id > 0L } }.distinct()
+                    if (ids.isNotEmpty()) {
+                        whereClauses += """
+                            NOT EXISTS (
+                                SELECT 1 FROM entry_tags etf
+                                WHERE etf.entry_code = e.code
+                                  AND etf.tag_id IN (${ids.joinToString(",") { "?" }})
+                            )
+                        """.trimIndent()
+                        ids.forEach { args += it.toString() }
+                    }
+                }
                 "type" -> {
                     whereClauses += """
                         EXISTS (
@@ -3294,7 +3810,7 @@ class SauceTrackerDatabase(private val appContext: Context) : SQLiteOpenHelper(
         val rowsByCode = linkedMapOf<Int, JSONObject>()
         readableDatabase.rawQuery(
             """
-            SELECT code, num_pages, rating, read_state
+            SELECT code, title, num_pages, rating, read_state, media_id, cover_ext
             FROM entries
             WHERE COALESCE(read_state, 0) != 0 OR COALESCE(rating, 0) > 0
             ORDER BY code ASC
@@ -3302,16 +3818,22 @@ class SauceTrackerDatabase(private val appContext: Context) : SQLiteOpenHelper(
             null
         ).use { cursor ->
             val codeIndex = cursor.getColumnIndexOrThrow("code")
+            val titleIndex = cursor.getColumnIndexOrThrow("title")
             val pagesIndex = cursor.getColumnIndexOrThrow("num_pages")
             val ratingIndex = cursor.getColumnIndexOrThrow("rating")
             val readIndex = cursor.getColumnIndexOrThrow("read_state")
+            val mediaIdIndex = cursor.getColumnIndexOrThrow("media_id")
+            val coverExtIndex = cursor.getColumnIndexOrThrow("cover_ext")
             while (cursor.moveToNext()) {
                 val code = cursor.getInt(codeIndex)
                 val row = JSONObject()
                     .put("code", code)
+                    .put("title", cursor.getString(titleIndex) ?: "Gallery $code")
                     .put("num_pages", cursor.getInt(pagesIndex).coerceAtLeast(0))
                     .put("rating", cursor.getInt(ratingIndex).coerceIn(0, 5))
                     .put("read", if (cursor.getInt(readIndex) != 0) 1 else 0)
+                    .put("media_id", cursor.getLong(mediaIdIndex).coerceAtLeast(0L))
+                    .put("cover_ext", parseCoverExtension(cursor.getString(coverExtIndex) ?: ""))
                     .put("tags", JSONArray())
                 rowsByCode[code] = row
                 entriesArray.put(row)
@@ -4279,6 +4801,13 @@ class SauceTrackerDatabase(private val appContext: Context) : SQLiteOpenHelper(
             if (!cursor.moveToFirst()) return null
             return cursor.getString(0)
         }
+    }
+
+    fun findTagId(type: String, name: String): Long? {
+        val normalizedType = type.trim().lowercase(Locale.US)
+        val normalizedName = normalizeTagName(name)
+        if (normalizedType.isBlank() || normalizedName.isBlank()) return null
+        return findTagId(readableDatabase, normalizedName, normalizedType)
     }
 
     fun getTagRouteRef(tagId: Long): TagRouteRef? {

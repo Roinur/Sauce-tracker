@@ -18,12 +18,20 @@ import com.roinur.saucetracker.feature.desktopbridge.DesktopBridgeServer
 import com.roinur.saucetracker.feature.browser.GalleryBrowserActivity
 import com.roinur.saucetracker.feature.heatmap.HeatmapEngine
 import com.roinur.saucetracker.feature.heatmap.HeatmapViewModel
+import com.roinur.saucetracker.feature.heatmap.TrendRequest
+import com.roinur.saucetracker.feature.heatmap.TrendSnapshot
+import com.roinur.saucetracker.feature.heatmap.TrendTarget
+import com.roinur.saucetracker.feature.heatmap.TrendTargetKind
 import com.roinur.saucetracker.feature.library.detail.RelatedEntryMode
 import com.roinur.saucetracker.feature.library.detail.SelectedEntryRelatedUiState
 import com.roinur.saucetracker.feature.library.detail.EntrySeriesResolver
 import com.roinur.saucetracker.feature.library.detail.filterRelatedEntriesByReadState
 import com.roinur.saucetracker.feature.library.detail.showReadRelatedEntries
 import com.roinur.saucetracker.feature.library.downloads.EntryDownloadController
+import com.roinur.saucetracker.feature.library.presets.TagPreset
+import com.roinur.saucetracker.feature.library.presets.TagPresetRole
+import com.roinur.saucetracker.feature.library.presets.TagPresetStore
+import com.roinur.saucetracker.feature.library.presets.TagPresetTerm
 import com.roinur.saucetracker.feature.slideshow.GallerySlideshowActivity
 import com.roinur.saucetracker.feature.suggestions.SuggestionsViewModel
 import com.roinur.saucetracker.feature.suggestions.buildSuggestionProfile
@@ -32,6 +40,13 @@ import com.roinur.saucetracker.feature.suggestions.matchesSuggestionFilters
 import com.roinur.saucetracker.feature.suggestions.SuggestionCreatorToken
 import com.roinur.saucetracker.feature.suggestions.SuggestionTagToken
 import com.roinur.saucetracker.feature.suggestions.SuggestionCacheStore
+import com.roinur.saucetracker.feature.suggestions.TasteDriver
+import com.roinur.saucetracker.feature.suggestions.TasteTrainingFeedback
+import com.roinur.saucetracker.feature.suggestions.TasteTrainingPrompt
+import com.roinur.saucetracker.feature.suggestions.TasteTrainingStore
+import com.roinur.saucetracker.feature.suggestions.TASTE_TRAINING_DRIVER_TYPES
+import com.roinur.saucetracker.feature.settings.LibraryHealthReport
+import com.roinur.saucetracker.feature.settings.LibraryHealthScanner
 import com.roinur.saucetracker.feature.subscriptions.SubscriptionSyncUseCase
 import com.roinur.saucetracker.feature.subscriptions.SubscriptionsViewModel
 
@@ -252,6 +267,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -279,6 +295,7 @@ import com.roinur.saucetracker.core.preferences.KEY_DESKTOP_BRIDGE_ENABLED
 import com.roinur.saucetracker.core.preferences.KEY_DESKTOP_BRIDGE_PORT
 import com.roinur.saucetracker.core.preferences.KEY_DASHBOARD_DISCOVERY_PAGE_ORDER
 import com.roinur.saucetracker.core.preferences.KEY_DASHBOARD_INSIGHT_PAGE_ORDER
+import com.roinur.saucetracker.core.preferences.KEY_HEATMAP_OVERVIEW_PAGE_ORDER
 import com.roinur.saucetracker.core.preferences.KEY_ENTRY_FILTER_CYCLE_ORDER
 import com.roinur.saucetracker.core.preferences.KEY_ENTRY_PIN_PRIORITY
 import com.roinur.saucetracker.core.preferences.KEY_EXPERIMENTAL_DASHBOARD_LONG_PRESS
@@ -451,8 +468,18 @@ private fun extractCreatorNameCandidates(text: String): List<String> {
 private const val SUGGESTION_VISIBLE_TARGET = 12
 private const val SUGGESTION_CANDIDATE_TARGET = 30
 private const val LIBRARY_FILTER_CHANGE_COALESCE_MS = 90L
+private const val SAVED_ACTIVE_TAG_FILTER_IDS = "dashboard_active_tag_filter_ids"
+private const val SAVED_ACTIVE_TAG_PRESET_ID = "dashboard_active_tag_preset_id"
+private const val SAVED_ACTIVE_TAG_PRESET_NAME = "dashboard_active_tag_preset_name"
+private const val SAVED_ACTIVE_TAG_PRESET_QUERY = "dashboard_active_tag_preset_query"
+private const val SAVED_PENDING_RATING_CODE = "dashboard_pending_rating_code"
+private const val SAVED_PENDING_RATING_WAS_READ = "dashboard_pending_rating_was_read"
+private const val SAVED_RATING_PROMPT_REQUIRED = "dashboard_rating_prompt_required"
 
-class DashboardViewModel(application: Application) : AndroidViewModel(application) {
+class DashboardViewModel(
+    application: Application,
+    private val savedStateHandle: SavedStateHandle
+) : AndroidViewModel(application) {
     private val backupImporter = BackupImporter()
     private val suggestionsViewModel = SuggestionsViewModel()
     private val db = SauceTrackerDatabase(application)
@@ -480,6 +507,8 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     private val heatmapRepository = HeatmapRepository(db)
     private val prefs = SaucePreferences.from(application).raw
     private val preferenceReader = DashboardPreferenceReader(prefs)
+    private val tasteTrainingStore = TasteTrainingStore(prefs)
+    private val tagPresetStore = TagPresetStore(prefs)
     private val appLockController = AppLockController.from(application, APP_LOCK_GRACE_MS)
 
     var themeMode by mutableStateOf(GitHubMediaSession.themeOverride ?: preferenceReader.loadThemeMode())
@@ -581,6 +610,14 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         private set
     var suggestedEntriesInfoMessage by mutableStateOf<String?>(null)
         private set
+    internal var tasteTrainingPrompts by mutableStateOf<List<TasteTrainingPrompt>>(emptyList())
+        private set
+    internal var tasteTrainingPromptLoading by mutableStateOf(false)
+        private set
+    var tasteTrainingFeedbackCount by mutableStateOf(tasteTrainingStore.load().size)
+        private set
+    internal var tasteTrainingFeedback by mutableStateOf(tasteTrainingStore.load())
+        private set
     var suggestionMode by mutableStateOf(SuggestionMode.MIXED)
         private set
     var suggestionCategoryWeights by mutableStateOf(preferenceReader.loadSuggestionCategoryWeights())
@@ -589,6 +626,12 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         private set
     var tags by mutableStateOf<List<TagCountRow>>(emptyList())
         private set
+    internal var tagPresets by mutableStateOf(tagPresetStore.load())
+        private set
+    var activeTagPresetName by mutableStateOf(savedStateHandle.get<String>(SAVED_ACTIVE_TAG_PRESET_NAME))
+        private set
+    private var activeTagPresetId: String? = savedStateHandle.get(SAVED_ACTIVE_TAG_PRESET_ID)
+    private var activeTagPresetQuery: String = savedStateHandle.get<String>(SAVED_ACTIVE_TAG_PRESET_QUERY).orEmpty()
     var popularTags by mutableStateOf<List<PopularTagRow>>(emptyList())
         private set
     var entryLayoutPreviewSamples by mutableStateOf<List<EntryRow>>(emptyList())
@@ -648,10 +691,15 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     private var tagGraphThumbnailPreloadJob: Job? = null
     private var selectedDetailLoadJob: Job? = null
     private var selectedEntryRelatedJob: Job? = null
+    private var tasteTrainingPromptRefreshJob: Job? = null
+    private var tasteTrainingTagLoadJob: Job? = null
+    private var tasteTrainingLoadGeneration = 0L
     var creatorEntriesById by mutableStateOf<Map<Long, List<CreatorEntryRow>>>(emptyMap())
         private set
 
-    val activeTagFilterIds = mutableStateListOf<Long>()
+    val activeTagFilterIds = mutableStateListOf<Long>().apply {
+        addAll(savedStateHandle.get<LongArray>(SAVED_ACTIVE_TAG_FILTER_IDS)?.toList().orEmpty())
+    }
     val expandedCreatorIds = mutableStateListOf<Long>()
 
     var selectedCode by mutableStateOf<Int?>(null)
@@ -680,6 +728,8 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     var dashboardDiscoveryPageOrder by mutableStateOf(preferenceReader.loadDashboardDiscoveryPageOrder())
         private set
     var dashboardInsightPageOrder by mutableStateOf(preferenceReader.loadDashboardInsightPageOrder())
+        private set
+    var heatmapOverviewPageOrder by mutableStateOf(preferenceReader.loadHeatmapOverviewPageOrder())
         private set
     var defaultEntrySortField by mutableStateOf(preferenceReader.loadDefaultEntrySortField())
         private set
@@ -729,6 +779,10 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     var infoDialogMessage by mutableStateOf<String?>(null)
         private set
     var errorDialogMessage by mutableStateOf<String?>(null)
+        private set
+    internal var libraryHealthReport by mutableStateOf<LibraryHealthReport?>(null)
+        private set
+    var libraryHealthScanning by mutableStateOf(false)
         private set
     var browserRatingPromptState by mutableStateOf<BrowserRatingPromptState?>(null)
         private set
@@ -833,9 +887,11 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
             currentAccentMode = { accentMode.name }
         )
     }
-    private var pendingBrowserRatingCode: Int? = null
-    private var awaitingBrowserRatingPrompt: Boolean = false
-    private var pendingBrowserRatingWasRead: Boolean = false
+    private var pendingBrowserRatingCode: Int? = savedStateHandle.get(SAVED_PENDING_RATING_CODE)
+    private var awaitingBrowserRatingPrompt: Boolean =
+        savedStateHandle.get<Boolean>(SAVED_RATING_PROMPT_REQUIRED) == true
+    private var pendingBrowserRatingWasRead: Boolean =
+        savedStateHandle.get<Boolean>(SAVED_PENDING_RATING_WAS_READ) == true
     private var pendingIncomingShareText: String? = null
     private var pendingIncomingShareImage: Uri? = null
     var pendingOpenSauceFinder by mutableStateOf(false)
@@ -949,6 +1005,40 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun setStatus(message: String) {
         statusMessage = message
+    }
+
+    fun runLibraryHealthScan() {
+        if (libraryHealthScanning) return
+        libraryHealthScanning = true
+        viewModelScope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    LibraryHealthScanner.scan(getApplication<Application>().applicationContext, db, prefs)
+                }
+            }.onSuccess { report ->
+                libraryHealthReport = report
+            }.onFailure { error ->
+                errorDialogMessage = "Library Health scan failed: ${error.message ?: "unknown error"}"
+            }
+            libraryHealthScanning = false
+        }
+    }
+
+    fun clearRebuildableCachesFromHealth() {
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                db.clearEntryHeatmapCache()
+                prefs.edit()
+                    .remove("suggestion_result_cache_v1")
+                    .remove("suggestion_gallery_cache_v1")
+                    .apply()
+            }
+            suggestedEntries = emptyList()
+            suggestedOverflowEntries.clear()
+            updateEntryHeatmapCacheStatus(null)
+            setStatus("Cleared only rebuildable Heatmap and suggestion caches.")
+            runLibraryHealthScan()
+        }
     }
 
     fun isSessionNewEntry(code: Int): Boolean {
@@ -2005,6 +2095,19 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         pendingOpenSubscriptions = false
     }
 
+    private fun persistPendingRatingRequirement() {
+        savedStateHandle[SAVED_PENDING_RATING_CODE] = pendingBrowserRatingCode
+        savedStateHandle[SAVED_PENDING_RATING_WAS_READ] = pendingBrowserRatingWasRead
+        savedStateHandle[SAVED_RATING_PROMPT_REQUIRED] = awaitingBrowserRatingPrompt
+    }
+
+    private fun clearPendingRatingRequirement() {
+        pendingBrowserRatingCode = null
+        pendingBrowserRatingWasRead = false
+        awaitingBrowserRatingPrompt = false
+        persistPendingRatingRequirement()
+    }
+
     fun onHostResumed() {
         incognitoModeEnabled = preferenceReader.loadIncognitoMode()
         refreshAppLockOnResume()
@@ -2012,8 +2115,11 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         consumePendingShareImageIfUnlocked()
         refreshAll(selectedCode)
         if (!awaitingBrowserRatingPrompt) return
-        awaitingBrowserRatingPrompt = false
-        val code = pendingBrowserRatingCode ?: return
+        if (browserRatingPromptState != null) return
+        val code = pendingBrowserRatingCode ?: run {
+            clearPendingRatingRequirement()
+            return
+        }
 
         val detail = libraryRepository.entryDetail(code)
         val wasReadBefore = pendingBrowserRatingWasRead || (detail?.isRead == true)
@@ -2221,6 +2327,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun activeFilterLabel(): String {
+        activeTagPresetName?.takeIf { it.isNotBlank() }?.let { return it }
         if (activeTagFilterIds.isEmpty()) return "No tag selected"
         val names = activeTagFilterIds.mapNotNull { tagId ->
             tagNameCache[tagId] ?: db.getTagName(tagId)?.also { resolved ->
@@ -2453,6 +2560,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun clearTagFilter() {
+        clearActiveTagPresetState()
         activeTagFilterIds.clear()
         publishTagFilterChange()
         setStatus("Tag filter cleared.")
@@ -2467,7 +2575,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun openUnifiedInputInBrowser() {
         val rawInput = codeInput.trim()
-        val hasTagFilter = activeTagFilterIds.isNotEmpty()
+        val hasTagFilter = hasActiveTagFilter()
 
         if (rawInput.equals("github", ignoreCase = true)) {
             toggleGitHubMediaMode()
@@ -2791,6 +2899,10 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         if (incognitoModeEnabled) {
             setStatus("Tag filter selection is disabled in incognito mode.")
             return
+        }
+        if (activeTagPresetId != null) {
+            clearActiveTagPresetState()
+            activeTagFilterIds.clear()
         }
         if (activeTagFilterIds.contains(tagId)) {
             activeTagFilterIds.remove(tagId)
@@ -3246,6 +3358,23 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         preferenceReader.normalizedDashboardInsightPageOrder(dashboardInsightPageOrder)
             .joinToString(" → ") { dashboardInsightPageLabel(it) }
 
+    fun updateHeatmapOverviewPageOrder(order: List<HeatmapOverviewPage>) {
+        val normalized = preferenceReader.normalizedHeatmapOverviewPageOrder(order)
+        heatmapOverviewPageOrder = normalized
+        prefs.edit()
+            .putString(KEY_HEATMAP_OVERVIEW_PAGE_ORDER, normalized.joinToString(",") { it.name })
+            .apply()
+        setStatus("Heatmap page order updated.")
+    }
+
+    fun resetHeatmapOverviewPageOrder() {
+        updateHeatmapOverviewPageOrder(preferenceReader.defaultHeatmapOverviewPageOrder())
+    }
+
+    fun heatmapOverviewPageOrderSummary(): String =
+        preferenceReader.normalizedHeatmapOverviewPageOrder(heatmapOverviewPageOrder)
+            .joinToString(" → ") { heatmapOverviewPageLabel(it) }
+
     internal fun selectRelatedEntryMode(mode: RelatedEntryMode) {
         selectedRelatedEntryMode = mode
     }
@@ -3399,11 +3528,17 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
             if (finalDetail.mediaId <= 0L || finalDetail.numPages <= 0) {
                 errorDialogMessage = "Could not open slideshow because image metadata is unavailable for code $code."
                 setStatus("Slideshow failed: missing image metadata.")
-                pendingBrowserRatingCode = null
-                awaitingBrowserRatingPrompt = false
-                pendingBrowserRatingWasRead = false
+                clearPendingRatingRequirement()
                 return@launch
             }
+
+            // Arm the existing host prompt before launching. Starting the
+            // Activity is asynchronous, so setting this afterwards leaves a
+            // narrow return race when the slideshow is exited immediately.
+            pendingBrowserRatingCode = finalDetail.code
+            pendingBrowserRatingWasRead = finalDetail.isRead
+            awaitingBrowserRatingPrompt = true
+            persistPendingRatingRequirement()
 
             val opened = openInAppSlideshow(
                 code = finalDetail.code,
@@ -3413,14 +3548,8 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 numPages = finalDetail.numPages,
                 startPage = 1
             )
-            if (opened) {
-                pendingBrowserRatingCode = finalDetail.code
-                pendingBrowserRatingWasRead = finalDetail.isRead
-                awaitingBrowserRatingPrompt = true
-            } else {
-                pendingBrowserRatingCode = null
-                awaitingBrowserRatingPrompt = false
-                pendingBrowserRatingWasRead = false
+            if (!opened) {
+                clearPendingRatingRequirement()
             }
         }
     }
@@ -4059,6 +4188,258 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    fun refreshTasteTrainingPrompts() {
+        tasteTrainingPromptRefreshJob?.cancel()
+        tasteTrainingTagLoadJob?.cancel()
+        val generation = ++tasteTrainingLoadGeneration
+        tasteTrainingPromptLoading = true
+        tasteTrainingPromptRefreshJob = viewModelScope.launch {
+            try {
+                val completedCodes = tasteTrainingStore.load().mapTo(hashSetOf()) { it.code }
+                val prompts = withContext(Dispatchers.IO) {
+                    val rows = db.exportSuggestionProfileSnapshot().optJSONArray("entries") ?: JSONArray()
+                    buildList {
+                        for (index in 0 until rows.length()) {
+                            val row = rows.optJSONObject(index) ?: continue
+                            val code = row.optInt("code", 0)
+                            val rating = row.optInt("rating", 0).coerceIn(0, 5)
+                            if (code <= 0 || code in completedCodes || rating !in setOf(1, 2, 4, 5)) continue
+                            val drivers = buildList {
+                                val tagsJson = row.optJSONArray("tags") ?: JSONArray()
+                                for (tagIndex in 0 until tagsJson.length()) {
+                                    val tag = tagsJson.optJSONObject(tagIndex) ?: continue
+                                    val name = tag.optString("name").trim()
+                                    val type = tag.optString("type", "tag").trim().lowercase(Locale.US)
+                                    if (name.isNotBlank() && type in TASTE_TRAINING_DRIVER_TYPES) {
+                                        add(TasteDriver(name, type))
+                                    }
+                                }
+                            }.distinctBy { it.key }
+                            if (drivers.isNotEmpty()) {
+                                val mediaId = row.optLong("media_id", 0L).coerceAtLeast(0L)
+                                val coverExt = row.optString("cover_ext", "jpg").trim().ifBlank { "jpg" }
+                                val thumbnailUrl = if (mediaId > 0L) {
+                                    "https://t.nhentai.net/galleries/$mediaId/cover.$coverExt"
+                                } else {
+                                    ""
+                                }
+                                add(
+                                    TasteTrainingPrompt(
+                                        code = code,
+                                        title = row.optString("title").ifBlank { "Gallery $code" },
+                                        rating = rating,
+                                        thumbnailUrl = thumbnailUrl,
+                                        drivers = drivers
+                                    )
+                                )
+                            }
+                        }
+                    }.sortedWith(compareByDescending<TasteTrainingPrompt> { abs(it.rating - 3) }.thenByDescending { it.code })
+                        .take(40)
+                }
+                if (generation != tasteTrainingLoadGeneration) return@launch
+                tasteTrainingPrompts = prompts
+                refreshCurrentTasteTrainingPromptTags()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                if (generation == tasteTrainingLoadGeneration) {
+                    tasteTrainingPromptLoading = false
+                    errorDialogMessage = "Could not prepare training prompts: ${error.message ?: "unknown error"}"
+                }
+            }
+        }
+    }
+
+    private fun refreshCurrentTasteTrainingPromptTags() {
+        tasteTrainingTagLoadJob?.cancel()
+        val generation = ++tasteTrainingLoadGeneration
+        val prompt = tasteTrainingPrompts.firstOrNull()
+        if (prompt == null) {
+            tasteTrainingPromptLoading = false
+            return
+        }
+        tasteTrainingPromptLoading = true
+        tasteTrainingTagLoadJob = viewModelScope.launch {
+            try {
+                val remoteDrivers = withContext(Dispatchers.IO) {
+                    runCatching { client.fetchGallery(prompt.code) }
+                        .getOrNull()
+                        ?.tags
+                        .orEmpty()
+                        .mapNotNull { tag ->
+                            val name = tag.name.trim()
+                            val type = tag.type.trim().lowercase(Locale.US)
+                            if (name.isNotBlank() && type in TASTE_TRAINING_DRIVER_TYPES) {
+                                TasteDriver(name, type)
+                            } else {
+                                null
+                            }
+                        }
+                        .distinctBy { it.key }
+                }
+                if (generation == tasteTrainingLoadGeneration && remoteDrivers.isNotEmpty()) {
+                    tasteTrainingPrompts = tasteTrainingPrompts.map { queued ->
+                        if (queued.code == prompt.code) queued.copy(drivers = remoteDrivers) else queued
+                    }
+                }
+            } finally {
+                if (generation == tasteTrainingLoadGeneration) {
+                    tasteTrainingPromptLoading = false
+                }
+            }
+        }
+    }
+
+    internal fun saveTasteTrainingFeedback(
+        prompt: TasteTrainingPrompt,
+        selectedDriverKeys: Set<String>,
+        notAboutMetadata: Boolean,
+        normallyLikeButNotThisEntry: Boolean
+    ) {
+        tasteTrainingStore.save(
+            TasteTrainingFeedback(
+                prompt.code,
+                prompt.rating,
+                selectedDriverKeys,
+                notAboutMetadata,
+                normallyLikeButNotThisEntry,
+                System.currentTimeMillis()
+            )
+        )
+        tasteTrainingFeedbackCount = tasteTrainingStore.load().size
+        tasteTrainingFeedback = tasteTrainingStore.load()
+        tasteTrainingPrompts = tasteTrainingPrompts.filterNot { it.code == prompt.code }
+        refreshCurrentTasteTrainingPromptTags()
+        if (!suggestedEntriesCollapsed) refreshSuggestedEntries(force = true)
+        setStatus("Saved suggestion training feedback for #${prompt.code}.")
+    }
+
+    fun skipTasteTrainingPrompt(code: Int) {
+        tasteTrainingPrompts = tasteTrainingPrompts.filterNot { it.code == code }
+        refreshCurrentTasteTrainingPromptTags()
+    }
+
+    fun deleteTasteTrainingFeedback(code: Int) {
+        tasteTrainingStore.delete(code)
+        tasteTrainingFeedback = tasteTrainingStore.load()
+        tasteTrainingFeedbackCount = tasteTrainingFeedback.size
+        refreshTasteTrainingPrompts()
+        if (!suggestedEntriesCollapsed) refreshSuggestedEntries(force = true)
+        setStatus("Removed training feedback for #$code. You can answer it again.")
+    }
+
+    internal fun saveTagPreset(preset: TagPreset) {
+        tagPresetStore.upsert(preset)
+        tagPresets = tagPresetStore.load()
+        if (activeTagPresetId == preset.id) applyTagPreset(preset)
+        setStatus("Saved tag preset '${preset.name}'.")
+    }
+
+    fun deleteTagPreset(id: String) {
+        if (activeTagPresetId == id) clearTagFilter()
+        tagPresetStore.delete(id)
+        tagPresets = tagPresetStore.load()
+    }
+
+    fun moveTagPreset(id: String, delta: Int) {
+        tagPresetStore.move(id, delta)
+        tagPresets = tagPresetStore.load()
+    }
+
+    internal fun applyTagPreset(preset: TagPreset) {
+        fun ids(role: TagPresetRole): List<Long> = preset.terms
+            .filter { it.role == role }
+            .mapNotNull { term -> db.findTagId(term.type, term.name) }
+            .distinct()
+        val allIds = ids(TagPresetRole.INCLUDE)
+        fun encodedIds(role: TagPresetRole): String = ids(role).joinToString("|")
+        val query = buildList {
+            encodedIds(TagPresetRole.EITHER).takeIf { it.isNotBlank() }?.let { add("anytagid:$it") }
+            encodedIds(TagPresetRole.HIDE).takeIf { it.isNotBlank() }?.let { add("excludetagid:$it") }
+        }.joinToString(" ")
+        activeTagFilterIds.clear()
+        activeTagFilterIds.addAll(allIds)
+        activeTagPresetId = preset.id
+        activeTagPresetName = preset.name
+        activeTagPresetQuery = query
+        publishTagFilterChange()
+        setStatus("Applied tag preset '${preset.name}'.")
+    }
+
+    fun hasActiveTagFilter(): Boolean = activeTagFilterIds.isNotEmpty() || activeTagPresetId != null
+
+    fun suggestedTagPresetNameForInput(): String? {
+        if (incognitoModeEnabled) return null
+        val input = normalizeTagName(codeInput)
+        if (input.isBlank()) return null
+        tagPresets.firstOrNull { normalizeTagName(it.name) == input }?.let { return it.name }
+        tagPresets.firstOrNull { preset ->
+            val name = normalizeTagName(preset.name)
+            name.isNotBlank() && Regex("(^|\\s)${Regex.escape(name)}($|\\s)").containsMatchIn(input)
+        }?.let { return it.name }
+        if (!input.contains(' ')) {
+            return tagPresets
+                .map { it to editDistance(input, normalizeTagName(it.name)) }
+                .filter { (_, distance) -> distance <= maxOf(1, input.length / 4) }
+                .minByOrNull { it.second }
+                ?.first
+                ?.name
+        }
+        return null
+    }
+
+    fun applySuggestedTagPreset(name: String) {
+        val preset = tagPresets.firstOrNull { it.name.equals(name, ignoreCase = true) } ?: return
+        val raw = codeInput.trim()
+        val exactPattern = Regex("(?i)(^|\\s)${Regex.escape(preset.name.trim())}(?=\\s|$)")
+        val remaining = if (exactPattern.containsMatchIn(raw)) {
+            raw.replace(exactPattern, " ").trim().replace(Regex("\\s+"), " ")
+        } else {
+            ""
+        }
+        codeInput = remaining
+        entrySearch = remaining
+        applyTagPreset(preset)
+    }
+
+    private fun effectiveEntrySearch(): String = listOf(entrySearch.trim(), activeTagPresetQuery.trim())
+        .filter { it.isNotBlank() }
+        .joinToString(" ")
+
+    private fun clearActiveTagPresetState() {
+        activeTagPresetId = null
+        activeTagPresetName = null
+        activeTagPresetQuery = ""
+    }
+
+    private fun persistActiveTagFilterState() {
+        savedStateHandle[SAVED_ACTIVE_TAG_FILTER_IDS] = activeTagFilterIds.toLongArray()
+        savedStateHandle[SAVED_ACTIVE_TAG_PRESET_ID] = activeTagPresetId
+        savedStateHandle[SAVED_ACTIVE_TAG_PRESET_NAME] = activeTagPresetName
+        savedStateHandle[SAVED_ACTIVE_TAG_PRESET_QUERY] = activeTagPresetQuery
+    }
+
+    private fun editDistance(left: String, right: String): Int {
+        if (left == right) return 0
+        if (left.isEmpty()) return right.length
+        if (right.isEmpty()) return left.length
+        var previous = IntArray(right.length + 1) { it }
+        left.forEachIndexed { leftIndex, leftChar ->
+            val current = IntArray(right.length + 1)
+            current[0] = leftIndex + 1
+            right.forEachIndexed { rightIndex, rightChar ->
+                current[rightIndex + 1] = minOf(
+                    current[rightIndex] + 1,
+                    previous[rightIndex + 1] + 1,
+                    previous[rightIndex] + if (leftChar == rightChar) 0 else 1
+                )
+            }
+            previous = current
+        }
+        return previous[right.length]
+    }
+
     private fun suggestionCacheFingerprint(
         libraryRevision: String,
         blocked: Set<String>,
@@ -4071,7 +4452,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         val stableInput = buildString {
             append(libraryRevision)
             append('|').append(suggestionMode.name)
-            append('|').append(entrySearch.trim())
+            append('|').append(effectiveEntrySearch())
             append('|').append(requiredTags.sorted().joinToString(","))
             append('|').append(blocked.sorted().joinToString(","))
             append('|').append(parsedSearch.filters.joinToString(",") { "${it.key}:${it.value}" })
@@ -4079,6 +4460,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 .joinToString(",") { "${it.key.name}:${it.value}" })
             append('|').append(themeStrength)
             append('|').append(applySessionExclusions)
+            append('|').append(tasteTrainingStore.revision())
         }
         return stableInput.hashCode().toUInt().toString(16)
     }
@@ -4102,7 +4484,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                     .map { normalizeTagName(it) }
                     .filter { it.isNotBlank() }
                     .toSet()
-                val parsedSearch = parseSearchQuery(entrySearch)
+                val parsedSearch = parseSearchQuery(effectiveEntrySearch())
                 val searchTerms = extractSearchEverythingBrowserTerms(parsedSearch.freeText)
                     .map { it.trim() }
                     .filter { it.isNotBlank() }
@@ -4186,7 +4568,8 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                             blockedTags = blocked,
                             categoryWeights = suggestionCategoryWeightsSnapshot,
                             themeStrength = suggestionThemeStrengthSnapshot,
-                            suggestionsViewModel = suggestionsViewModel
+                            suggestionsViewModel = suggestionsViewModel,
+                            explicitDriverAdjustments = tasteTrainingStore.boundedDriverAdjustments()
                         )
                         PerformanceMetrics.recordSuggestionProfileMillis(
                             android.os.SystemClock.elapsedRealtime() - profileStartedAt
@@ -5058,8 +5441,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
             libraryRepository.setEntryRead(prompt.code, true)
         }
         browserRatingPromptState = null
-        pendingBrowserRatingCode = null
-        pendingBrowserRatingWasRead = false
+        clearPendingRatingRequirement()
         publishLibraryChange(
             LibraryChange.entryContentChanged(LibraryChangeReason.RATING_CHANGED, prompt.code)
         )
@@ -5074,8 +5456,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun skipBrowserRatingPrompt() {
         browserRatingPromptState = null
-        pendingBrowserRatingCode = null
-        pendingBrowserRatingWasRead = false
+        clearPendingRatingRequirement()
         setStatus("Skipped browser-exit rating prompt.")
     }
 
@@ -5541,6 +5922,9 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
 
             val import = result.getOrNull() ?: return@launch
             val restoredPreferenceCount = PortablePreferences.apply(prefs, payload.portablePreferences)
+            tasteTrainingFeedback = tasteTrainingStore.load()
+            tasteTrainingFeedbackCount = tasteTrainingFeedback.size
+            tagPresets = tagPresetStore.load()
             if (import.insertedCodes.isNotEmpty()) {
                 import.insertedCodes.forEach { registerSessionNewEntryCode(it) }
             }
@@ -5804,6 +6188,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     private fun publishTagFilterChange() {
+        persistActiveTagFilterState()
         // Keep the selected tag and its visible count in the same Compose frame. Only the remote
         // suggestions refresh is expensive enough to debounce across a burst of tag selections.
         publishLibraryChange(LibraryChange.tagFilterChanged())
@@ -5899,6 +6284,18 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     suspend fun readEntriesForDay(day: LocalDate): List<DayReadEntryRow> {
         return withContext(Dispatchers.IO) {
             db.listReadEntriesForDay(day)
+        }
+    }
+
+    suspend fun trendTargets(kind: TrendTargetKind, includeMisc: Boolean): List<TrendTarget> {
+        return withContext(Dispatchers.IO) {
+            heatmapRepository.trendTargets(kind, includeMisc)
+        }
+    }
+
+    suspend fun trendSnapshot(request: TrendRequest): TrendSnapshot {
+        return withContext(Dispatchers.IO) {
+            heatmapRepository.trendSnapshot(request)
         }
     }
 
@@ -6131,7 +6528,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                     totalSteps = totalSteps
                 )
 
-                val textSnapshot = entrySearch
+                val textSnapshot = effectiveEntrySearch()
                 val tagSnapshot = activeTagFilterIds.toList()
                 val loadedEntries = withContext(Dispatchers.IO) {
                     libraryRepository.entries(
@@ -6194,6 +6591,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 if (filtered.size != activeTagFilterIds.size) {
                     activeTagFilterIds.clear()
                     activeTagFilterIds.addAll(filtered)
+                    persistActiveTagFilterState()
                 }
 
                 startupPreloadState = StartupPreloadState(
@@ -6204,7 +6602,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
 
                 val loadedCreators = withContext(Dispatchers.IO) {
                     libraryRepository.creators(
-                        textFilter = entrySearch,
+                        textFilter = effectiveEntrySearch(),
                         tagFilterIds = activeTagFilterIds.toList(),
                         sortField = creatorSortField,
                         sortDirection = creatorSortDirection
@@ -6355,7 +6753,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         forceIncludeCode: Int? = null
     ) {
         val rawEntries = libraryRepository.entries(
-            textFilter = entrySearch,
+            textFilter = effectiveEntrySearch(),
             tagFilterIds = activeTagFilterIds.toList(),
             sortField = sortField,
             sortDirection = sortDirection,
@@ -6391,7 +6789,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
 
     private fun loadTags() {
         tags = libraryRepository.tags(
-            textFilter = entrySearch,
+            textFilter = effectiveEntrySearch(),
             sortField = tagSortField,
             sortDirection = tagSortDirection,
             visibleEntryCodes = entries.map { it.code }
@@ -6417,6 +6815,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         if (filtered.size != activeTagFilterIds.size) {
             activeTagFilterIds.clear()
             activeTagFilterIds.addAll(filtered)
+            persistActiveTagFilterState()
             loadEntries(selectedCode)
             loadCreators()
         }
@@ -6431,7 +6830,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
 
     private fun loadCreators() {
         creators = libraryRepository.creators(
-            textFilter = entrySearch,
+            textFilter = effectiveEntrySearch(),
             tagFilterIds = activeTagFilterIds.toList(),
             sortField = creatorSortField,
             sortDirection = creatorSortDirection
@@ -6513,9 +6912,9 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     private fun filteredSubscriptionEvents(): List<SubscriptionEventRow> {
-        val parsedSearch = parseSearchQuery(entrySearch)
+        val parsedSearch = parseSearchQuery(effectiveEntrySearch())
         val hasSearchFilter = parsedSearch.freeText.isNotBlank() || parsedSearch.filters.isNotEmpty()
-        val hasTagFilter = activeTagFilterIds.isNotEmpty()
+        val hasTagFilter = hasActiveTagFilter()
         val hasScopedEntries = hasSearchFilter || hasTagFilter || entryReadFilter != EntryReadFilterMode.ALL
         val filteredEntryCodes = if (hasScopedEntries) {
             entries.asSequence().map { it.code }.toSet()
@@ -6840,7 +7239,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
 
     private fun buildCreatorEntryFilterKey(): String {
         val tags = activeTagFilterIds.toList().sorted().joinToString(",")
-        return "${entrySearch.trim()}|$tags"
+        return "${effectiveEntrySearch()}|$tags"
     }
 
     private fun ensureCreatorEntriesLoaded(tagId: Long, forceRefresh: Boolean) {
@@ -6852,7 +7251,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
             loadingCreatorIds.add(tagId)
         }
 
-        val searchSnapshot = entrySearch
+        val searchSnapshot = effectiveEntrySearch()
         val tagFilterSnapshot = activeTagFilterIds.toList()
         creatorLoadJobs[tagId] = viewModelScope.launch {
             val rows = withContext(Dispatchers.IO) {
@@ -7076,6 +7475,8 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         libraryChangeFlushJob?.cancel()
         seriesNeighborsJob?.cancel()
         selectedEntryRelatedJob?.cancel()
+        tasteTrainingPromptRefreshJob?.cancel()
+        tasteTrainingTagLoadJob?.cancel()
         selectedEntryRelatedCache.clear()
         creatorLoadJobs.values.forEach { it.cancel() }
         creatorLoadJobs.clear()

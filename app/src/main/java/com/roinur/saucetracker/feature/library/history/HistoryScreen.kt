@@ -378,11 +378,14 @@ internal fun ReadingHistoryPage(
     dayEntriesProvider: suspend (LocalDate) -> List<DayReadEntryRow>
 ) {
     var selectedRange by remember { mutableStateOf(StatsRange.MONTH) }
+    var showReadBreakdown by remember { mutableStateOf(false) }
     var selectedDay by remember { mutableStateOf<DailyActivityPoint?>(null) }
     var selectedDayEntries by remember { mutableStateOf<List<DayReadEntryRow>>(emptyList()) }
     var selectedDayEntriesLoading by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val readCount = analyticsSnapshot.readCounts[selectedRange] ?: 0
+    val readBreakdown = analyticsSnapshot.readBreakdowns[selectedRange]
+        ?: ReadCountBreakdown(uniqueEntries = readCount, rereads = 0)
     val pagesRead = analyticsSnapshot.pagesRead[selectedRange] ?: 0
     val averageRating = analyticsSnapshot.averageRatings[selectedRange] ?: 0f
     val speedStats = analyticsSnapshot.readingSpeed[selectedRange] ?: ReadingSpeedStats()
@@ -402,6 +405,15 @@ internal fun ReadingHistoryPage(
                 .getOrElse { emptyList() }
             selectedDayEntriesLoading = false
         }
+    }
+
+    if (showReadBreakdown) {
+        ReadingBreakdownDialog(
+            range = selectedRange,
+            breakdown = readBreakdown,
+            obscure = false,
+            onDismiss = { showReadBreakdown = false }
+        )
     }
 
     selectedDay?.let { day ->
@@ -513,6 +525,7 @@ internal fun ReadingHistoryPage(
                     ReadingHistoryMetricCard(
                         label = "Reads",
                         value = readCount.toString(),
+                        onClick = { showReadBreakdown = true },
                         modifier = Modifier.weight(1f)
                     )
                     ReadingHistoryMetricCard(
@@ -625,10 +638,21 @@ internal fun ReadingHistorySummaryCard(
     onSelectedRangeChange: (StatsRange) -> Unit,
     onRefresh: () -> Unit
 ) {
+    var showReadBreakdown by remember { mutableStateOf(false) }
     val readCount = analyticsSnapshot.readCounts[selectedRange] ?: 0
+    val readBreakdown = analyticsSnapshot.readBreakdowns[selectedRange]
+        ?: ReadCountBreakdown(uniqueEntries = readCount, rereads = 0)
     val pagesRead = analyticsSnapshot.pagesRead[selectedRange] ?: 0
     val averageRating = analyticsSnapshot.averageRatings[selectedRange] ?: 0f
     val speedStats = analyticsSnapshot.readingSpeed[selectedRange] ?: ReadingSpeedStats()
+    if (showReadBreakdown) {
+        ReadingBreakdownDialog(
+            range = selectedRange,
+            breakdown = readBreakdown,
+            obscure = incognitoModeEnabled,
+            onDismiss = { showReadBreakdown = false }
+        )
+    }
     Card(
         shape = RoundedCornerShape(22.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
@@ -688,6 +712,7 @@ internal fun ReadingHistorySummaryCard(
                         label = "Reads",
                         value = readCount.toString(),
                         obscure = incognitoModeEnabled,
+                        onClick = if (incognitoModeEnabled) null else ({ showReadBreakdown = true }),
                         modifier = Modifier.weight(1f)
                     )
                     ReadingHistoryMetricCard(
@@ -893,11 +918,21 @@ internal fun ReadingHistoryMetricCard(
     label: String,
     value: String,
     obscure: Boolean = false,
+    onClick: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
+    val shape = RoundedCornerShape(18.dp)
     Surface(
-        modifier = modifier,
-        shape = RoundedCornerShape(18.dp),
+        modifier = modifier.then(
+            if (onClick != null) {
+                Modifier
+                    .clip(shape)
+                    .clickable(onClick = onClick)
+            } else {
+                Modifier
+            }
+        ),
+        shape = shape,
         color = MaterialTheme.colorScheme.surfaceContainerHigh,
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f))
     ) {
@@ -922,6 +957,70 @@ internal fun ReadingHistoryMetricCard(
                 overflow = TextOverflow.Ellipsis
             )
         }
+    }
+}
+
+@Composable
+private fun ReadingBreakdownDialog(
+    range: StatsRange,
+    breakdown: ReadCountBreakdown,
+    obscure: Boolean,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Reading breakdown") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    text = range.label,
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                ReadingBreakdownRow("Unique entries", breakdown.uniqueEntries, obscure)
+                ReadingBreakdownRow("Re-reads", breakdown.rereads, obscure)
+                androidx.compose.material3.HorizontalDivider(
+                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                )
+                ReadingBreakdownRow("Total reading events", breakdown.total, obscure, emphasize = true)
+                Text(
+                    text = "Entries shows unique currently-read items. History also includes recorded re-reads.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("Close") }
+        }
+    )
+}
+
+@Composable
+private fun ReadingBreakdownRow(
+    label: String,
+    value: Int,
+    obscure: Boolean,
+    emphasize: Boolean = false
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = label,
+            fontWeight = if (emphasize) FontWeight.Bold else FontWeight.Normal
+        )
+        Text(
+            text = value.toString(),
+            modifier = Modifier.privacyObfuscate(
+                enabled = obscure,
+                overlayColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = INCOGNITO_OVERLAY_ALPHA)
+            ),
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Black
+        )
     }
 }
 

@@ -3,6 +3,11 @@ package com.roinur.saucetracker
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.runtime.Composable
 import com.roinur.saucetracker.feature.dashboard.DashboardViewModel
+import com.roinur.saucetracker.feature.library.presets.TagPresetsDialog
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import com.roinur.saucetracker.feature.library.tags.ModernTagsPage
 
 @Composable
@@ -12,6 +17,8 @@ internal fun DashboardTagsSection(
     onNotificationPermissionRequired: () -> Unit,
     onConfigureSubscription: (String, String) -> Unit
 ) {
+    var showPresets by remember { mutableStateOf(false) }
+    if (showPresets) TagPresetsDialog(vm = vm, onDismiss = { showPresets = false })
     ModernTagsPage(
         tags = vm.tags,
         listState = listState,
@@ -30,6 +37,7 @@ internal fun DashboardTagsSection(
             onConfigureSubscription(tag.type, tag.name)
         },
         onClearFilter = vm::clearTagFilter,
+        onOpenPresets = { showPresets = true },
         onSortByName = { vm.onTagSortClicked(TagSortField.NAME) },
         onSortByType = { vm.onTagSortClicked(TagSortField.TYPE) },
         onSortByCount = { vm.onTagSortClicked(TagSortField.COUNT) }

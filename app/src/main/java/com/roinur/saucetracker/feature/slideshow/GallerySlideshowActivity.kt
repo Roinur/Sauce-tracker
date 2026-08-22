@@ -83,7 +83,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.draw.BlurredEdgeTreatment
@@ -189,7 +188,6 @@ class GallerySlideshowActivity : ComponentActivity() {
         private const val EXTRA_NUM_PAGES = "extra_num_pages"
         private const val EXTRA_START_PAGE = "extra_start_page"
         private const val EXTRA_INCOGNITO_MODE = "extra_incognito_mode"
-
         fun createIntent(
             context: Context,
             code: Int,
@@ -248,6 +246,8 @@ class GallerySlideshowActivity : ComponentActivity() {
         sessionStartMillisUtc = System.currentTimeMillis()
 
         setContent {
+            var exitFlowStarted by remember { mutableStateOf(false) }
+
             SlideshowTheme(
                 themeMode = themeMode,
                 accentMode = accentMode,
@@ -272,8 +272,11 @@ class GallerySlideshowActivity : ComponentActivity() {
                         }
                     },
                     onDone = {
-                        persistReadingSessionIfNeeded()
-                        finish()
+                        if (!exitFlowStarted) {
+                            exitFlowStarted = true
+                            persistReadingSessionIfNeeded()
+                            finish()
+                        }
                     }
                 )
             }

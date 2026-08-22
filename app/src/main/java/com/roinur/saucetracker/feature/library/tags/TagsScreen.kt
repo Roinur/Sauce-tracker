@@ -326,6 +326,7 @@ internal fun ModernTagsPage(
     onToggleSubscription: (TagCountRow) -> Unit,
     onConfigureSubscription: (TagCountRow) -> Unit,
     onClearFilter: () -> Unit,
+    onOpenPresets: () -> Unit,
     onSortByName: () -> Unit,
     onSortByType: () -> Unit,
     onSortByCount: () -> Unit
@@ -349,13 +350,22 @@ internal fun ModernTagsPage(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                ImmediateActionText(
-                    label = "Clear",
-                    onAction = onClearFilter,
-                    textStyle = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    enabled = selectedIds.isNotEmpty()
-                )
+                Row {
+                    ImmediateActionText(
+                        label = "Presets",
+                        onAction = onOpenPresets,
+                        textStyle = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        enabled = !incognitoModeEnabled
+                    )
+                    ImmediateActionText(
+                        label = "Clear",
+                        onAction = onClearFilter,
+                        textStyle = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        enabled = selectedIds.isNotEmpty()
+                    )
+                }
             }
             LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 item {

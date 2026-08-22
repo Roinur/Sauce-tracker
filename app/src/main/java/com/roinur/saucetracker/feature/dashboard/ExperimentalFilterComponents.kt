@@ -165,13 +165,15 @@ internal fun ExperimentalFilterChip(
 @Composable
 internal fun ExperimentalTagFilterChipField(
     chips: List<Pair<Long, String>>,
+    presetName: String? = null,
     showingCount: Int,
     incognitoModeEnabled: Boolean,
     onRemoveTag: (Long) -> Unit,
     onClearAll: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val hasChips = chips.isNotEmpty()
+    val activePresetName = presetName?.trim()?.takeIf { it.isNotBlank() }
+    val hasChips = activePresetName != null || chips.isNotEmpty()
     val fieldValue = when {
         hasChips -> " "
         incognitoModeEnabled -> "••••••••••••••"
@@ -200,12 +202,20 @@ internal fun ExperimentalTagFilterChipField(
                 modifier = Modifier.fillMaxSize()
             )
             if (hasChips) {
-                chips.forEach { (tagId, tagName) ->
+                if (activePresetName != null) {
                     ExperimentalInlineTagChip(
-                        label = if (incognitoModeEnabled) "•••••" else tagName,
+                        label = if (incognitoModeEnabled) "•••••" else activePresetName,
                         enabled = !incognitoModeEnabled,
-                        onRemove = { onRemoveTag(tagId) }
+                        onRemove = onClearAll
                     )
+                } else {
+                    chips.forEach { (tagId, tagName) ->
+                        ExperimentalInlineTagChip(
+                            label = if (incognitoModeEnabled) "•••••" else tagName,
+                            enabled = !incognitoModeEnabled,
+                            onRemove = { onRemoveTag(tagId) }
+                        )
+                    }
                 }
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
