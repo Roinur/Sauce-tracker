@@ -56,6 +56,11 @@ function compare(before, after) {
       for (const name of new Set([...Object.keys(before[key]), ...Object.keys(after[key])])) {
         if (name === 'profiles') {
           compareRows(before[key][name], after[key][name], name, row => row.id, ['last_used_at']);
+        } else if (name === 'profile_preferences') {
+          // ProfilePreferenceStore recaptures unchanged values during normal navigation.
+          // Require every key/value to match; only its write timestamp may advance.
+          compareRows(before[key][name], after[key][name], name,
+            row => JSON.stringify([row.profile_id, row.preference_key]), ['updated_at']);
         } else unchanged(after[key][name], before[key][name], 'source_platform.' + name);
       }
     } else unchanged(after[key], before[key], key);

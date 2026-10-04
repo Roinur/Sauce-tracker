@@ -19,6 +19,7 @@ databases for destructive restore/migration cases and never reset the user's app
 - [x] GitHub media-copy regression reproduces the old parent REPLACE/RESTRICT crash and checks dependency ordering, interrupted-copy rollback, repeated copies and unchanged production rows in isolated SQLite.
 - [x] Backup-history regressions cover strict legacy default comparison, incomplete multi-source imports, valid browser-only history, invalid owners and read-only existing-backup lookup.
 - [x] Repeated `sauce.bat verify -NoInstall` after the release Heatmap Overview ANR fix (2026-10-04): 162 JVM tests, zero failures/errors; isolated SQL/Bridge regressions, profile APK and vital lint passed.
+- [x] Final signed release installed in place on the primary phone after backup; actual dashboard Heatmap widget works, confirmed independently by the owner. Updated stable Library Health and current/procedural Verified Restore pass; before/after V2 export comparison preserves 1,935 source entries, 859 sessions and populated MangaDex state (2026-10-04).
 - [ ] Run `sauce.bat performance` and compare cold/warm startup, browser, reader and large-library scrolling against 1.9.
 
 ## Data safety — release blockers
