@@ -220,6 +220,8 @@ class GalleryBrowserActivity : ComponentActivity() {
         private const val EXTRA_INITIAL_CREATOR_NAME = "extra_initial_creator_name"
         private const val EXTRA_BLOCKED_TAGS = "extra_blocked_tags"
         private const val EXTRA_INCOGNITO_MODE = "extra_incognito_mode"
+        private const val EXTRA_SOURCE_ID = "extra_source_id"
+        private const val EXTRA_INITIAL_REMOTE_ID = "extra_initial_remote_id"
 
         fun createIntent(
             context: Context,
@@ -228,7 +230,9 @@ class GalleryBrowserActivity : ComponentActivity() {
             initialCreatorType: String? = null,
             initialCreatorName: String? = null,
             incognitoModeEnabled: Boolean = false,
-            blockedTags: List<String> = emptyList()
+            blockedTags: List<String> = emptyList(),
+            sourceId: String = "nhentai",
+            initialRemoteId: String? = null
         ): Intent {
             return Intent(context, GalleryBrowserActivity::class.java).apply {
                 if (initialCode != null && initialCode > 0) {
@@ -240,6 +244,10 @@ class GalleryBrowserActivity : ComponentActivity() {
                     putExtra(EXTRA_INITIAL_CREATOR_NAME, initialCreatorName.trim())
                 }
                 putExtra(EXTRA_INCOGNITO_MODE, incognitoModeEnabled)
+                putExtra(EXTRA_SOURCE_ID, sourceId)
+                initialRemoteId?.trim()?.takeIf(String::isNotBlank)?.let {
+                    putExtra(EXTRA_INITIAL_REMOTE_ID, it)
+                }
                 putStringArrayListExtra(EXTRA_BLOCKED_TAGS, ArrayList(blockedTags))
             }
         }
@@ -250,6 +258,8 @@ class GalleryBrowserActivity : ComponentActivity() {
         overridePendingTransition(android.R.anim.fade_in, android.R.anim.fade_out)
         val initialCode = intent?.getIntExtra(EXTRA_INITIAL_CODE, 0)?.takeIf { it > 0 }
         val initialQuery = intent?.getStringExtra(EXTRA_INITIAL_QUERY).orEmpty().trim()
+        val sourceId = intent?.getStringExtra(EXTRA_SOURCE_ID).orEmpty().ifBlank { "nhentai" }
+        val initialRemoteId = intent?.getStringExtra(EXTRA_INITIAL_REMOTE_ID).orEmpty().trim().ifBlank { null }
         val initialCreatorType = intent?.getStringExtra(EXTRA_INITIAL_CREATOR_TYPE).orEmpty().trim()
             .ifBlank { null }
         val initialCreatorName = intent?.getStringExtra(EXTRA_INITIAL_CREATOR_NAME).orEmpty().trim()
@@ -290,6 +300,8 @@ class GalleryBrowserActivity : ComponentActivity() {
                 Box(Modifier.fillMaxSize()) {
                     BrowserScreen(
                         initialCode = initialCode,
+                        initialRemoteId = initialRemoteId,
+                        sourceId = sourceId,
                         initialQuery = initialQuery,
                         initialCreatorType = initialCreatorType,
                         initialCreatorName = initialCreatorName,

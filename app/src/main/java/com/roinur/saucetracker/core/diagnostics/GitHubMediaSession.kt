@@ -149,17 +149,39 @@ internal object GitHubMediaSession {
             ).use { cursor ->
                 while (cursor.moveToNext()) destinationTables += cursor.getString(0)
             }
+            val copiedTables = destinationTables.filterNot {
+                it == "android_metadata" || it.startsWith("sqlite_")
+            }
+            val parents = copiedTables.associateWith { table ->
+                val identifier = table.replace("\"", "\"\"")
+                database.rawQuery("PRAGMA main.foreign_key_list(\"$identifier\")", null).use { cursor ->
+                    buildSet {
+                        val parentColumn = cursor.getColumnIndexOrThrow("table")
+                        while (cursor.moveToNext()) add(cursor.getString(parentColumn))
+                    }
+                }
+            }
+            val copyOrder = DatabaseCopyOrder.parentFirst(parents)
             database.beginTransaction()
             try {
-                destinationTables
-                    .filterNot { it == "android_metadata" || it == "sqlite_sequence" }
+                // Newly created media databases contain default source/profile rows.
+                // REPLACE would delete those parents while RESTRICT children still exist.
+                // Only clear the isolated destination, then insert parents before children.
+                copyOrder.asReversed().forEach { table ->
+                    val identifier = table.replace("\"", "\"\"")
+                    database.execSQL("DELETE FROM main.\"$identifier\"")
+                }
+                copyOrder
                     .filter { it in sourceTables }
                     .forEach { table ->
                         val identifier = table.replace("\"", "\"\"")
                         database.execSQL(
-                            "INSERT OR REPLACE INTO main.\"$identifier\" SELECT * FROM production.\"$identifier\""
+                            "INSERT INTO main.\"$identifier\" SELECT * FROM production.\"$identifier\""
                         )
                     }
+                database.rawQuery("PRAGMA main.foreign_key_check", null).use { cursor ->
+                    check(!cursor.moveToFirst()) { "Invalid relations in the isolated media database." }
+                }
                 database.setTransactionSuccessful()
             } finally {
                 database.endTransaction()

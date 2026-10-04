@@ -20,6 +20,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.ripple.rememberRipple
 import androidx.compose.material3.Card
 import androidx.compose.material3.Icon
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -43,6 +44,12 @@ internal fun LegacyTagsSection(
     onNotificationPermissionRequired: () -> Unit,
     onConfigureSubscription: (String, String) -> Unit
 ) {
+    val sourceTags = vm.tags
+        .filter { it.type.equals("source", ignoreCase = true) }
+        .sortedBy { tag -> when (tag.name.lowercase()) { "nhentai" -> 0; "mangadex" -> 1; else -> 2 } }
+    val regularTags = vm.tags.filterNot { it.type.equals("source", ignoreCase = true) }
+    val orderedTags = sourceTags + regularTags
+    val firstRegularTagId = regularTags.firstOrNull()?.id
                 Card {
         Column(
             modifier = Modifier.padding(12.dp),
@@ -131,7 +138,7 @@ internal fun LegacyTagsSection(
                     verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     items(
-                        vm.tags,
+                        orderedTags,
                         key = { it.id },
                         contentType = { "tag_row" }
                         ) { tag ->
@@ -144,6 +151,14 @@ internal fun LegacyTagsSection(
                             } else {
                                 MaterialTheme.colorScheme.surface
                         }
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            if (sourceTags.isNotEmpty() && tag.id == firstRegularTagId) {
+                                HorizontalDivider(
+                                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f),
+                                    thickness = 1.dp,
+                                    modifier = Modifier.padding(horizontal = 10.dp)
+                                )
+                            }
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -195,7 +210,7 @@ internal fun LegacyTagsSection(
                                 modifier = Modifier.weight(0.20f),
                                 contentAlignment = Alignment.CenterEnd
                             ) {
-                                Icon(
+                                if (!tag.type.equals("source", ignoreCase = true) && vm.canSubscribeRoute(tag.type)) Icon(
                                     painter = painterResource(
                                         id = if (subscribed) {
                                             R.drawable.ic_notifications_24
@@ -232,6 +247,7 @@ internal fun LegacyTagsSection(
                                         )
                                 )
                             }
+                        }
                         }
                     }
                 }

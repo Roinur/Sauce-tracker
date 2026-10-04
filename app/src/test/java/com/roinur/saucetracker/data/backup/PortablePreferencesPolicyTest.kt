@@ -8,6 +8,7 @@ class PortablePreferencesPolicyTest {
     @Test
     fun normalSettingsArePortable() {
         assertTrue(PortablePreferences.isPortable("theme_mode"))
+        assertTrue(PortablePreferences.isPortable("extra_dark"))
         assertTrue(PortablePreferences.isPortable("app_lock_pin_hash"))
         assertTrue(PortablePreferences.isPortable("slideshow_reading_mode"))
         assertTrue(PortablePreferences.isPortable("future_setting_added_later"))

@@ -7,6 +7,8 @@ import com.roinur.saucetracker.core.ui.theme.applyAccentMode
 import com.roinur.saucetracker.core.ui.components.*
 import com.roinur.saucetracker.data.backup.*
 import com.roinur.saucetracker.data.database.SauceTrackerDatabase
+import com.roinur.saucetracker.data.profile.ProfileStore
+import com.roinur.saucetracker.data.source.SourceChapter
 import com.roinur.saucetracker.feature.slideshow.GallerySlideshowActivity
 
 import android.app.Activity
@@ -64,6 +66,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
@@ -83,6 +86,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.LocalMinimumInteractiveComponentEnforcement
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -103,6 +107,7 @@ import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
@@ -110,6 +115,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -136,6 +142,7 @@ import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
@@ -155,6 +162,8 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.fragment.app.FragmentActivity
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import com.roinur.saucetracker.core.diagnostics.PerformanceMetrics
 import com.roinur.saucetracker.core.media.BitmapMemoryCache
 import com.roinur.saucetracker.core.media.computeDHash64
@@ -193,7 +202,36 @@ internal fun BrowserDetailTransitionShell(
     )
 }
 
-@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun BrowserChapterPreview(
+    chapter: SourceChapter,
+    obscure: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val url = chapter.previewUrl
+    if (!url.isNullOrBlank()) {
+        RemoteThumbnail(
+            urls = listOf(url),
+            contentDescription = "${chapter.displayTitle} preview",
+            obscure = obscure,
+            onClick = onClick,
+            modifier = modifier
+        )
+    } else {
+        Surface(
+            shape = RoundedCornerShape(9.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant,
+            modifier = modifier
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Text("•", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable
 internal fun GalleryDetailPane(
     detail: BrowserGalleryDetail,
@@ -201,25 +239,54 @@ internal fun GalleryDetailPane(
     incognitoModeEnabled: Boolean,
     loading: Boolean,
     onOpenSlideshow: (Int) -> Unit,
+    onOpenChapter: (String) -> Unit,
     onOpenCode: (Int) -> Unit,
     onOpenRelatedCode: (Int) -> Unit,
     onOpenCreator: (String, String) -> Unit,
     onSearchTag: (String) -> Unit,
     onCopyCandidateDetected: (String) -> Unit,
     onImportSuccessFlash: (Int) -> Unit,
-    onLibraryStateChanged: (Int, BrowserLocalLibraryState) -> Unit
+    onLibraryStateChanged: (Int, BrowserLocalLibraryState) -> Unit,
+    onLanguageSelected: (String) -> Unit = {}
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val db = remember(context) { SauceTrackerDatabase(context.applicationContext) }
+    val library = remember(db) { BrowserLibraryAccess(db) }
     val privacyOverlay = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = GALLERY_BROWSER_INCOGNITO_OVERLAY_ALPHA)
     val summary = detail.summary
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var readerReturnNonce by remember { mutableLongStateOf(0L) }
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) readerReturnNonce++
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    val chapterProgress by produceState(initialValue = emptyMap<String, com.roinur.saucetracker.data.database.SourceChapterProgress>(), summary.remoteId, detail.chapters, readerReturnNonce) {
+        value = if (!summary.isNhentai) withContext(Dispatchers.IO) {
+            db.sourceChapterProgress(ProfileStore(db).activeProfileId(), summary.sourceId, summary.remoteId)
+        } else emptyMap()
+    }
     val thumbRows = remember(detail.pageThumbs) { detail.pageThumbs.chunked(3) }
-    var localLibraryState by remember(summary.code) {
+    var chaptersAscending by remember(summary.sourceId, summary.remoteId) { mutableStateOf(false) }
+    val displayedChapters = remember(detail.chapters, chaptersAscending) {
+        com.roinur.saucetracker.data.source.orderedSourceChapters(detail.chapters, chaptersAscending)
+    }
+    var localLibraryState by remember(summary.sourceId, summary.remoteId) {
         mutableStateOf(BrowserLocalLibraryState(exists = false, rating = 0, isRead = false, pinned = false))
     }
-    var localLibraryLoading by remember(summary.code) { mutableStateOf(true) }
-    var pendingImportAction by remember(summary.code) { mutableStateOf<BrowserPendingLibraryAction?>(null) }
+    var localLibraryLoading by remember(summary.sourceId, summary.remoteId) { mutableStateOf(true) }
+    var pendingImportAction by remember(summary.sourceId, summary.remoteId) { mutableStateOf<BrowserPendingLibraryAction?>(null) }
+    var importLanguage by remember(summary.remoteId) { mutableStateOf(detail.selectedLanguage) }
+    val importLanguages = remember(detail.availableLanguages, detail.chapters, detail.selectedLanguage) {
+        buildList {
+            detail.selectedLanguage.takeIf(String::isNotBlank)?.let(::add)
+            addAll(detail.availableLanguages)
+            detail.chapters.mapNotNullTo(this) { it.language.takeIf(String::isNotBlank) }
+        }.map { it.trim().lowercase() }.filter(String::isNotBlank).distinct()
+    }
     LaunchedEffect(incognitoModeEnabled) {
         if (incognitoModeEnabled) pendingImportAction = null
     }
@@ -258,40 +325,9 @@ internal fun GalleryDetailPane(
         )
     }
 
-    fun readLocalLibraryState(): BrowserLocalLibraryState {
-        val local = db.getEntryDetail(summary.code)
-        return if (local != null) {
-            BrowserLocalLibraryState(
-                exists = true,
-                rating = local.rating.coerceIn(0, 5),
-                isRead = local.isRead,
-                pinned = db.isEntryPinned(summary.code)
-            )
-        } else {
-            BrowserLocalLibraryState(exists = false, rating = 0, isRead = false, pinned = false)
-        }
-    }
+    fun readLocalLibraryState(): BrowserLocalLibraryState = library.state(summary)
 
-    fun applyLibraryActionInDb(action: BrowserPendingLibraryAction) {
-        when (action) {
-            is BrowserPendingLibraryAction.SetRating -> {
-                db.setEntryRating(summary.code, action.rating.coerceIn(0, 5))
-                db.setEntryRead(summary.code, true)
-            }
-            is BrowserPendingLibraryAction.SetRead -> {
-                db.setEntryRead(summary.code, action.isRead)
-            }
-            is BrowserPendingLibraryAction.SetPinned -> {
-                db.setEntryPinned(summary.code, action.pinned)
-            }
-            BrowserPendingLibraryAction.ToggleRead -> {
-                db.setEntryRead(summary.code, !localLibraryState.isRead)
-            }
-            BrowserPendingLibraryAction.TogglePinned -> {
-                db.setEntryPinned(summary.code, !db.isEntryPinned(summary.code))
-            }
-        }
-    }
+    fun applyLibraryActionInDb(action: BrowserPendingLibraryAction) { library.apply(summary, action) }
 
     fun applyLocalLibraryState(state: BrowserLocalLibraryState) {
         localLibraryState = state
@@ -328,21 +364,25 @@ internal fun GalleryDetailPane(
         scope.launch {
             localLibraryLoading = true
             val refreshed = withContext(Dispatchers.IO) {
-                db.deleteEntry(summary.code)
-                BrowserLocalLibraryState(exists = false, rating = 0, isRead = false, pinned = false)
+                library.remove(summary)
             }
             applyLocalLibraryState(refreshed)
             localLibraryLoading = false
             Toast.makeText(
                 context,
-                "Removed code ${summary.code} from local library.",
+                "Removed ${summary.displayId} from local library.",
                 Toast.LENGTH_SHORT
             ).show()
         }
     }
 
-    LaunchedEffect(summary.code) {
-        refreshLocalLibraryState()
+    LaunchedEffect(summary.sourceId, summary.remoteId, readerReturnNonce) {
+        localLibraryLoading = true
+        try {
+            applyLocalLibraryState(withContext(Dispatchers.IO) { readLocalLibraryState() })
+        } finally {
+            localLibraryLoading = false
+        }
     }
 
     LazyColumn(
@@ -389,7 +429,7 @@ internal fun GalleryDetailPane(
                             )
                         }
                         Text(
-                            text = "Code: ${summary.code}",
+                            text = if (summary.isNhentai) "Code: ${summary.displayId}" else "MangaDex · Copy ID",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.primary,
                             fontWeight = FontWeight.SemiBold,
@@ -399,13 +439,13 @@ internal fun GalleryDetailPane(
                                 copyTextToClipboard(
                                     context = context,
                                     label = "Sauce code",
-                                    value = summary.code.toString(),
-                                    successMessage = "Copied code ${summary.code}."
+                                    value = summary.remoteId,
+                                    successMessage = if (summary.isNhentai) "Copied ${summary.displayId}." else "Copied MangaDex ID."
                                 )
-                                onCopyCandidateDetected(summary.code.toString())
+                                onCopyCandidateDetected(summary.remoteId)
                             }
                         )
-                        Text("Pages: ${summary.numPages}")
+                        Text("${summary.unitLabel.replaceFirstChar { it.uppercase() }}: ${summary.numPages}")
                         Text("Uploaded: ${summary.uploadDate.ifBlank { "-" }}")
                         if (!incognitoModeEnabled) {
                             Text(
@@ -530,17 +570,18 @@ internal fun GalleryDetailPane(
                             }
                         }
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            TextButton(onClick = { onOpenSlideshow(1) }) {
-                                Text("Open Slideshow")
-                            }
-                            TextButton(onClick = { onOpenCode(summary.code) }) {
+                            TextButton(onClick = { onOpenSlideshow(1) }) { Text("Open Slideshow") }
+                            TextButton(onClick = { onOpenCode(summary.code) }, enabled = summary.isNhentai) {
                                 Text("Refresh")
                             }
                             TextButton(
-                                enabled = !incognitoModeEnabled && localLibraryState.exists,
-                                onClick = { removeFromLocalLibrary() }
+                                enabled = !incognitoModeEnabled && !localLibraryLoading,
+                                onClick = {
+                                    if (localLibraryState.exists) removeFromLocalLibrary()
+                                    else requestOrApplyLibraryAction(BrowserPendingLibraryAction.ImportOnly)
+                                }
                             ) {
-                                Text("Remove")
+                                Text(if (localLibraryState.exists) "Remove" else "Import")
                             }
                         }
                     }
@@ -602,9 +643,9 @@ internal fun GalleryDetailPane(
 
         item {
             RemoteThumbnail(
-                urls = buildCoverThumbnailUrls(summary.mediaId, summary.coverExt),
-                backupCode = summary.code,
-                contentDescription = "Cover for code ${summary.code}",
+                urls = summary.coverUrls,
+                backupCode = summary.code.takeIf { summary.isNhentai },
+                contentDescription = if (summary.isNhentai) "Cover for ${summary.displayId}" else "MangaDex cover",
                 obscure = incognitoModeEnabled,
                 onClick = { onOpenSlideshow(1) },
                 modifier = Modifier
@@ -685,6 +726,92 @@ internal fun GalleryDetailPane(
             }
         }
 
+        if (!summary.isNhentai) {
+            if (importLanguages.isNotEmpty()) {
+                item {
+                    Text("Language", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                    CompositionLocalProvider(LocalMinimumInteractiveComponentEnforcement provides false) {
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            importLanguages.forEach { language ->
+                                FilterChip(
+                                    selected = detail.selectedLanguage == language,
+                                    onClick = { if (!incognitoModeEnabled) onLanguageSelected(language) },
+                                    enabled = !incognitoModeEnabled,
+                                    label = { Text(com.roinur.saucetracker.data.source.mangaDexLanguageDisplayName(language)) }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            item {
+                ChapterListHeader(
+                    count = detail.chapters.size, loading = loading,
+                    ascending = chaptersAscending, onToggleOrder = { chaptersAscending = !chaptersAscending },
+                    enabled = !incognitoModeEnabled
+                )
+            }
+            items(displayedChapters, key = { chapter -> chapter.id }) { chapter ->
+                val shape = RoundedCornerShape(12.dp)
+                val progress = chapterProgress[chapter.id]
+                Surface(
+                    shape = shape,
+                    color = MaterialTheme.colorScheme.surfaceContainer,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(shape)
+                        .clickable(enabled = !incognitoModeEnabled) { onOpenChapter(chapter.id) }
+                ) {
+                    Box(modifier = Modifier.fillMaxWidth().clip(shape)) {
+                        if (!incognitoModeEnabled && (progress?.fraction ?: 0f) > 0f) {
+                            ReadingProgressBleedGlow(
+                                fraction = progress!!.fraction,
+                                tint = MaterialTheme.colorScheme.primary,
+                                cornerRadius = 12.dp,
+                                modifier = Modifier.matchParentSize().clip(shape)
+                            )
+                        }
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            BrowserChapterPreview(
+                                chapter = chapter,
+                                obscure = incognitoModeEnabled,
+                                onClick = { onOpenChapter(chapter.id) },
+                                modifier = Modifier.size(42.dp)
+                            )
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = chapter.displayTitle,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = if (progress?.completed == true) FontWeight.Normal else FontWeight.Medium,
+                                    color = if (progress?.completed == true) MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f) else MaterialTheme.colorScheme.onSurface,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                val secondary = buildList {
+                                    chapter.language.takeIf(String::isNotBlank)?.let(::add)
+                                    chapter.scanlationGroups.firstOrNull()?.takeIf(String::isNotBlank)?.let(::add)
+                                    chapter.pageCount.takeIf { it > 0 }?.let { add("$it pages") }
+                                }.joinToString(" · ")
+                                if (secondary.isNotBlank()) {
+                                    Text(
+                                        text = secondary,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                            Text("›", style = MaterialTheme.typography.titleLarge)
+                        }
+                    }
+                }
+            }
+        } else {
         item {
             Text(
                 text = "Gallery",
@@ -728,6 +855,7 @@ internal fun GalleryDetailPane(
                     }
                 }
             }
+        }
         }
 
         if (detail.relatedGalleries.isNotEmpty()) {
@@ -878,41 +1006,69 @@ internal fun GalleryDetailPane(
     pendingImportAction?.let { action ->
         AlertDialog(
             onDismissRequest = { pendingImportAction = null },
-            title = { Text("Import Required") },
+            title = { Text(if (action == BrowserPendingLibraryAction.ImportOnly) "Import Entry" else "Import Required") },
             text = {
-                Text(
-                    text = "You must import this sauce to change rating, read status, or pin state. Import now?"
-                )
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(if (action == BrowserPendingLibraryAction.ImportOnly) "Add this entry to your library?" else "You must import this sauce to change rating, read status, or pin state. Import now?")
+                    if (!summary.isNhentai) {
+                        Text("Choose language", fontWeight = FontWeight.SemiBold)
+                        if (importLanguages.isEmpty()) {
+                            Text("No translated languages are currently available.", style = MaterialTheme.typography.bodySmall)
+                        } else {
+                            CompositionLocalProvider(LocalMinimumInteractiveComponentEnforcement provides false) {
+                                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    importLanguages.forEach { language ->
+                                        FilterChip(selected = importLanguage == language, onClick = { importLanguage = language },
+                                            label = { Text(com.roinur.saucetracker.data.source.mangaDexLanguageDisplayName(language)) })
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             },
             confirmButton = {
                 TextButton(
+                    enabled = summary.isNhentai || importLanguage.isNotBlank(),
                     onClick = {
                         val confirmedAction = action
                         pendingImportAction = null
                         scope.launch {
                             localLibraryLoading = true
-                            val refreshed = withContext(Dispatchers.IO) {
-                                db.upsertGallery(buildImportGalleryData())
-                                if (db.getEntryDetail(summary.code) != null) {
-                                    applyLibraryActionInDb(confirmedAction)
+                            val importDetail = if (!summary.isNhentai && importLanguage.isNotBlank()) detail.withMangaDexLanguage(importLanguage) else detail
+                            val importSummary = importDetail.summary
+                            val refreshed = try {
+                                withContext(Dispatchers.IO) {
+                                    library.import(importDetail)
+                                    if (library.state(importSummary).exists) {
+                                        library.apply(importSummary, confirmedAction)
+                                    }
+                                    library.state(importSummary)
                                 }
-                                readLocalLibraryState()
+                            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                                throw cancelled
+                            } catch (_: Exception) {
+                                BrowserLocalLibraryState(false, 0, false, false)
+                            } finally {
+                                localLibraryLoading = false
                             }
                             applyLocalLibraryState(refreshed)
-                            localLibraryLoading = false
                             if (refreshed.exists) {
+                                if (!summary.isNhentai && importLanguage != detail.selectedLanguage) {
+                                    onLanguageSelected(importLanguage)
+                                }
                                 onImportSuccessFlash(summary.code)
                             } else {
                                 Toast.makeText(
                                     context,
-                                    "Could not import code ${summary.code}.",
+                                    "Could not import ${summary.displayId}.",
                                     Toast.LENGTH_SHORT
                                 ).show()
                             }
                         }
                     }
                 ) {
-                    Text("OK")
+                    Text("Import")
                 }
             },
             dismissButton = {

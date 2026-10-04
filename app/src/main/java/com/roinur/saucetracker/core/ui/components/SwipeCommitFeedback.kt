@@ -527,6 +527,52 @@ internal fun PinnedCornerBleedGlow(
 }
 
 @Composable
+internal fun ReadingProgressBleedGlow(
+    fraction: Float,
+    tint: Color,
+    cornerRadius: Dp = 0.dp,
+    modifier: Modifier = Modifier
+) {
+    val safeFraction = fraction.coerceIn(0f, 1f)
+    if (safeFraction <= 0f) return
+
+    Canvas(modifier = modifier) {
+        val progressWidth = size.width * safeFraction
+        if (progressWidth <= 0f) return@Canvas
+        val drawCornerRadius = CornerRadius(cornerRadius.toPx(), cornerRadius.toPx())
+        drawRoundRect(
+            brush = Brush.horizontalGradient(
+                colors = listOf(
+                    tint.copy(alpha = 0.08f),
+                    tint.copy(alpha = 0.14f),
+                    tint.copy(alpha = 0.27f)
+                ),
+                startX = 0f,
+                endX = progressWidth
+            ),
+            topLeft = Offset.Zero,
+            size = Size(progressWidth, size.height),
+            cornerRadius = drawCornerRadius
+        )
+        val edgeWidth = 18.dp.toPx().coerceAtMost(progressWidth)
+        val edgeCornerRadius = CornerRadius(
+            x = cornerRadius.toPx().coerceAtMost(edgeWidth / 2f),
+            y = cornerRadius.toPx().coerceAtMost(size.height / 2f)
+        )
+        drawRoundRect(
+            brush = Brush.horizontalGradient(
+                colors = listOf(Color.Transparent, tint.copy(alpha = 0.22f), Color.Transparent),
+                startX = progressWidth - edgeWidth,
+                endX = progressWidth + edgeWidth
+            ),
+            topLeft = Offset((progressWidth - edgeWidth).coerceAtLeast(0f), 0f),
+            size = Size(edgeWidth, size.height),
+            cornerRadius = edgeCornerRadius
+        )
+    }
+}
+
+@Composable
 internal fun SelectedCardEdgeGlow(
     active: Boolean,
     tint: Color,

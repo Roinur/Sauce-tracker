@@ -173,6 +173,17 @@ Write-Host "Gradle cache:  $gradleHome"
 Write-Host "Android home:  $androidUserHome"
 
 $offlineFirst = -not $Online
+if ($Mode -in @('verify', 'release')) {
+    $nodeCommand = Get-Command node -ErrorAction SilentlyContinue
+    if ($null -eq $nodeCommand) {
+        throw '2.0 verification requires Node.js 22.13 or newer for isolated migration and Bridge regression checks.'
+    }
+    Write-Host "`nRunning isolated 2.0 migration and Bridge regressions..." -ForegroundColor Cyan
+    & $nodeCommand.Source (Join-Path $projectRoot 'tools\verify-v2.cjs')
+    if ($LASTEXITCODE -ne 0) {
+        throw '2.0 regression checks failed. No APK will be installed.'
+    }
+}
 $exitCode = Invoke-GradleBuild -UseOffline $offlineFirst
 if ($exitCode -ne 0 -and $offlineFirst -and (Test-IsDependencyCacheFailure)) {
     Write-Host "`nA dependency is missing from the warm cache. Retrying once with network access..." -ForegroundColor Yellow

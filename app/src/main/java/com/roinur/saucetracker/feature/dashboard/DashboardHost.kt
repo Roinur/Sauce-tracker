@@ -116,6 +116,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.LocalMinimumInteractiveComponentEnforcement
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SwipeToDismissBox
 import androidx.compose.material3.SwipeToDismissBoxValue
@@ -283,6 +284,7 @@ import com.roinur.saucetracker.data.repository.HeatmapRepository
 import com.roinur.saucetracker.data.repository.LibraryRepository
 import com.roinur.saucetracker.data.repository.SubscriptionRepository
 import com.roinur.saucetracker.data.repository.SuggestionsRepository
+import com.roinur.saucetracker.data.source.SourceId
 import com.roinur.saucetracker.feature.library.creators.*
 import com.roinur.saucetracker.feature.library.detail.*
 import com.roinur.saucetracker.feature.library.history.*
@@ -296,6 +298,7 @@ import com.roinur.saucetracker.feature.heatmap.HeatmapScreen
 import com.roinur.saucetracker.feature.heatmap.HeatmapLayoutCache
 import com.roinur.saucetracker.feature.heatmap.HeatmapThumbnailLoader
 import com.roinur.saucetracker.feature.experimentalgallery.ExperimentalGalleryActivity
+import com.roinur.saucetracker.feature.qr.QrShareActivity
 import com.roinur.saucetracker.feature.slideshow.SlideshowHorizontalDirection
 import com.roinur.saucetracker.feature.slideshow.loadSlideshowHorizontalDirection
 import com.roinur.saucetracker.feature.slideshow.loadSlideshowVolumeButtonNavigationEnabled
@@ -443,6 +446,22 @@ private fun PersonalizationSettingsControls(
     onOpenBrowserDuplicateMode: () -> Unit,
     onOpenSort: (PersonalizationSortTarget) -> Unit
 ) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text("Extra dark", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            Text(
+                "Deeper backgrounds in dark mode. Keeps your accent color.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        androidx.compose.material3.Switch(checked = vm.extraDark, onCheckedChange = vm::updateExtraDark)
+    }
+    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.75f))
     Text(
         text = "Default entry mode uses the first enabled item in your cycle.",
         style = MaterialTheme.typography.bodySmall,
@@ -1368,15 +1387,15 @@ internal fun DashboardContent(
                         )
                     }
                     Text(
-                        text = if (vm.subscriptions.isEmpty()) {
+                        text = if (vm.logicalSubscriptions.isEmpty()) {
                             "No subscriptions yet."
                         } else {
-                            "${vm.subscriptions.size} subscription(s)"
+                            "${vm.logicalSubscriptionCount} subscription(s)"
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    if (vm.subscriptions.isEmpty()) {
+                    if (vm.logicalSubscriptions.isEmpty()) {
                         Text(
                             text = "Subscribe from a tag or artist/group bell to start tracking updates.",
                             color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -1389,7 +1408,7 @@ internal fun DashboardContent(
                             verticalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
                             items(
-                                vm.subscriptions,
+                                vm.logicalSubscriptions,
                                 key = { it.id },
                                 contentType = { "subscription_row" }
                             ) { subscription ->
@@ -2137,8 +2156,9 @@ internal fun DashboardContent(
         vm.galleryDownloadTreeUri,
         vm.autoBackupTreeUri
     ) {
-        val code = vm.selectedDetail?.code ?: 0
-        value = if (code > 0) {
+        val detail = vm.selectedDetail
+        val code = detail?.code ?: 0
+        value = if (code > 0 && detail?.isNhentai == true) {
             withContext(Dispatchers.IO) { vm.isEntryDownloaded(code) }
         } else {
             false
@@ -2498,6 +2518,39 @@ internal fun DashboardContent(
             loading = historySelectedDayEntriesLoading,
             incognitoModeEnabled = vm.incognitoModeEnabled,
             onDismiss = { historySelectedDay = null }
+        )
+    }
+
+    if (vm.restorePreviewMessage != null) {
+        AlertDialog(
+            onDismissRequest = vm::cancelPendingRestore,
+            title = { Text("Review restore") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(vm.restorePreviewMessage.orEmpty())
+                    if (vm.restoreProfileOptions.isNotEmpty()) {
+                        Text("Restore scope", style = MaterialTheme.typography.titleSmall)
+                        Row(
+                            modifier = Modifier.fillMaxWidth().clickable { vm.chooseRestoreProfile(null) },
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(selected = vm.selectedRestoreProfileId == null, onClick = { vm.chooseRestoreProfile(null) })
+                            Text("All profiles (replace the complete V2 profile set)")
+                        }
+                        vm.restoreProfileOptions.forEach { profile ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth().clickable { vm.chooseRestoreProfile(profile.id) },
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                RadioButton(selected = vm.selectedRestoreProfileId == profile.id, onClick = { vm.chooseRestoreProfile(profile.id) })
+                                Text("Only ${profile.name} (keep other local profiles)")
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = vm::confirmPendingRestore) { Text("Restore") } },
+            dismissButton = { TextButton(onClick = vm::cancelPendingRestore) { Text("Cancel") } }
         )
     }
 
@@ -3128,6 +3181,101 @@ internal fun DashboardContent(
                 }
             }
         )
+    }
+
+    vm.pendingBrowserSourceChoice?.let { input ->
+        Dialog(
+            onDismissRequest = vm::dismissBrowserSourceChoice,
+            properties = DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 18.dp)
+                    .widthIn(max = 520.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
+                ),
+                elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+                border = BorderStroke(
+                    1.dp,
+                    MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.65f)
+                ),
+                shape = RoundedCornerShape(28.dp)
+            ) {
+                Column(
+                    modifier = Modifier.padding(18.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Text(
+                        text = "Choose browser source",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        text = if (input.isBlank()) {
+                            "Both sources are active. Choose which home page to open."
+                        } else {
+                            "This input could belong to either source. Recognized NHentai codes and MangaDex links are opened automatically."
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    listOf(
+                        Triple("NHentai", "Six-digit galleries and the NHentai browser", SourceId("nhentai")),
+                        Triple("MangaDex", "Series, languages and chapter browsing", SourceId("mangadex"))
+                    ).forEach { (name, description, sourceId) ->
+                        val optionShape = RoundedCornerShape(18.dp)
+                        Surface(
+                            shape = optionShape,
+                            color = MaterialTheme.colorScheme.surfaceContainer,
+                            border = BorderStroke(
+                                1.dp,
+                                MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)
+                            ),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { vm.chooseBrowserSource(sourceId) }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                Surface(
+                                    shape = CircleShape,
+                                    color = MaterialTheme.colorScheme.primaryContainer,
+                                    modifier = Modifier.size(40.dp)
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Text(
+                                            text = name.first().toString(),
+                                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                            fontWeight = FontWeight.Black
+                                        )
+                                    }
+                                }
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(name, fontWeight = FontWeight.SemiBold)
+                                    Text(
+                                        text = description,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                Text("›", style = MaterialTheme.typography.titleLarge)
+                            }
+                        }
+                    }
+                    TextButton(
+                        onClick = vm::dismissBrowserSourceChoice,
+                        modifier = Modifier.align(Alignment.End)
+                    ) {
+                        Text("Cancel")
+                    }
+                }
+            }
+        }
     }
 
     vm.browserRatingPromptState?.let { prompt ->
@@ -3776,9 +3924,9 @@ internal fun DashboardContent(
             text = {
                 Text(
                     if (prompt.targetPinned) {
-                        "Pin code ${prompt.code}? Pinned entries stay at the top of the list."
+                        "Pin entry ${vm.entryDisplayId(prompt.code)}? Pinned entries stay at the top of the list."
                     } else {
-                        "Unpin code ${prompt.code}? It will return to normal list ordering."
+                        "Unpin entry ${vm.entryDisplayId(prompt.code)}? It will return to normal list ordering."
                     }
                 )
             },
@@ -3803,9 +3951,9 @@ internal fun DashboardContent(
                 Text(
                     vm.selectedCode?.let {
                         if (selectedEntryDownloaded) {
-                            "Delete code $it from your local database.\n\nYou can keep the local download, delete both, or remove only the local download."
+                            "Delete entry ${vm.entryDisplayId(it)} from your local database.\n\nYou can keep the local download, delete both, or remove only the local download."
                         } else {
-                            "Delete code $it and its tag links from your local database?"
+                            "Delete entry ${vm.entryDisplayId(it)} from the active profile?"
                         }
                     } ?: "Select an entry first."
                 )
@@ -4568,8 +4716,12 @@ internal fun DashboardContent(
                 )
             },
             actions = {
-                IconButton(
-                    onClick = {
+                SettingsWithProfilePicker(
+                    profiles = vm.profiles.map { ProfilePickerOption(it.id, it.name) },
+                    activeProfileId = vm.activeProfileId,
+                    incognitoModeEnabled = vm.incognitoModeEnabled,
+                    cunnyModeActive = vm.cunnyModeActive,
+                    onOpenSettings = {
                         val next = !showSettingsTab
                         showSettingsTab = next
                         if (next) {
@@ -4582,15 +4734,9 @@ internal fun DashboardContent(
                             showBlockedTagsManager = false
                         }
                     },
+                    onProfileSelected = vm::selectProfile,
                     modifier = Modifier.padding(end = 8.dp)
-                ) {
-                    Text(
-                        text = if (vm.cunnyModeActive) "\uD83E\uDD27" else "⚙",
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.SemiBold,
-                        cunnyExempt = true
-                    )
-                }
+                )
             }
         )
 
@@ -4626,6 +4772,9 @@ internal fun DashboardContent(
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
             if (showSettingsTab) {
+                item {
+                    ProfileSourceBar(vm, showProfileControls = true)
+                }
                 item {
                     Card {
                         Column(
@@ -4717,6 +4866,13 @@ internal fun DashboardContent(
                                 modifier = Modifier.fillMaxWidth()
                             ) {
                                 Text("Experimental Gallery")
+                            }
+                            Button(
+                                onClick = { context.startActivity(QrShareActivity.createIntent(context)) },
+                                enabled = !backupBusy && !vm.incognitoModeEnabled,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text("QR Share (up to 10 entries)")
                             }
                             Button(
                                 onClick = vm::backupNow,
@@ -6244,6 +6400,9 @@ internal fun DashboardContent(
                                 heatmapOverviewCollapsed = true
                                 vm.expandEntriesSection()
                                 switchHomeSurface(HomeSurface.ENTRIES, restoreScroll = false)
+                                // Use the same deferred library jump for every source. A row
+                                // that was off-screen has no layout anchor yet, so selecting it
+                                // directly could open MangaDex detail without scrolling to it.
                                 vm.openSeriesEntry(code)
                             },
                             onEntriesLongPress = if (vm.experimentalDashboardLongPress) {
@@ -6403,17 +6562,31 @@ internal fun DashboardContent(
                     }
                     HomeSection.SUBSCRIPTIONS -> {
                         item {
-                            DashboardSubscriptionsSection(
-                                vm = vm,
-                                selectedEventId = selectedSubscriptionEventId,
-                                onSelectedEventIdChange = { selectedSubscriptionEventId = it },
-                                preferLowRes = useReducedScrollThumbnails,
-                                listState = subscriptionsListState,
-                                maxHeight = creatorsListMaxHeight,
-                                onOpenList = { showSubscriptionsListDialog = true },
-                                onPressStart = ::stopActiveScrolls,
-                                runOnPressWhen = isAnyListScrolling
-                            )
+                            if (vm.subscriptionsAvailableForScope) {
+                                DashboardSubscriptionsSection(
+                                    vm = vm,
+                                    selectedEventId = selectedSubscriptionEventId,
+                                    onSelectedEventIdChange = { selectedSubscriptionEventId = it },
+                                    preferLowRes = useReducedScrollThumbnails,
+                                    listState = subscriptionsListState,
+                                    maxHeight = creatorsListMaxHeight,
+                                    onOpenList = { showSubscriptionsListDialog = true },
+                                    onPressStart = ::stopActiveScrolls,
+                                    runOnPressWhen = isAnyListScrolling
+                                )
+                            } else {
+                                Surface(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(18.dp),
+                                    color = MaterialTheme.colorScheme.surfaceContainerLow
+                                ) {
+                                    Text(
+                                        "Subscriptions are not supported by the active source scope.",
+                                        modifier = Modifier.padding(16.dp),
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
                         }
                     }
                     HomeSection.CREATORS -> {

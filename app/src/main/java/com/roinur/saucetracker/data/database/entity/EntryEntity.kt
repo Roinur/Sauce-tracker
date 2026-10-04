@@ -13,6 +13,12 @@ data class EntryEntity(
     val fetchedAt: String,
     val sourceUrl: String,
     val thumbnailUrl: String,
-    val tags: String
-)
+    val tags: String,
+    val sourceId: String = "nhentai",
+    val remoteId: String = code.toString(),
+    val unitLabel: String = "pages"
+) {
+    val isNhentai: Boolean get() = sourceId == "nhentai"
+    val displayId: String get() = if (isNhentai) code.toString() else remoteId
+}
 

@@ -21,7 +21,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         GitHubMediaSession.activateIfRequested(applicationContext, intent)
         viewModel = ViewModelProvider(this)[DashboardViewModel::class.java]
-        appNavigator = AppNavigator(viewModel::requestOpenSubscriptions)
+        appNavigator = AppNavigator(viewModel::selectProfile, viewModel::requestOpenSubscriptions)
         externalIntentRouter = ExternalIntentRouter(
             context = this,
             importBrowserInput = viewModel::importFromBrowserClipboard,

@@ -358,6 +358,10 @@ fun resolveOrCreateBackupContainerUri(context: Context, treeUri: Uri): Uri {
     return resolveOrCreateBackupRootDirectory(context, treeUri).documentUri
 }
 
+/** Diagnostics must not create folders or rewrite .nomedia while reading backups. */
+internal fun resolveExistingBackupContainerUri(context: Context, treeUri: Uri): Uri? =
+    resolveExistingBackupRootDirectory(context, treeUri)?.documentUri
+
 private fun syncSingleBackupThumbnailSeed(
     context: Context,
     coversDir: BackupDocumentRef,

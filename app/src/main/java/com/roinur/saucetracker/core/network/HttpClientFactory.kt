@@ -22,7 +22,7 @@ internal object HttpClientFactory {
         val builder = OkHttpClient.Builder()
         if (cache != null) {
             builder.cache(cache)
-            if (profile == HttpClientProfile.THUMBNAIL) {
+            if (profile == HttpClientProfile.THUMBNAIL || profile == HttpClientProfile.SLIDESHOW) {
                 // Gallery cover URLs are content-addressed by media id and safe to retain across
                 // process deaths and app updates even when the CDN omits useful cache headers.
                 builder.addNetworkInterceptor { chain ->
@@ -31,7 +31,16 @@ internal object HttpClientFactory {
                         ?.startsWith("image/", ignoreCase = true) == true
                     if (response.isSuccessful && isImage) {
                         response.newBuilder()
-                            .header("Cache-Control", "public, max-age=2592000")
+                            .header(
+                                "Cache-Control",
+                                if (profile == HttpClientProfile.THUMBNAIL) {
+                                    "public, max-age=2592000"
+                                } else {
+                                    // Reader cache is deliberately temporary and evictable. It
+                                    // is not the persistent, verified Download chapter feature.
+                                    "public, max-age=604800"
+                                }
+                            )
                             .build()
                     } else {
                         response
@@ -41,8 +50,12 @@ internal object HttpClientFactory {
         }
         when (profile) {
             HttpClientProfile.GALLERY_METADATA -> builder
+                .dispatcher(dispatcher(maxRequests = 32, maxRequestsPerHost = 8))
+                .connectionPool(ConnectionPool(8, 5, TimeUnit.MINUTES))
+                .cookieJar(CookieJar.NO_COOKIES)
                 .connectTimeout(15, TimeUnit.SECONDS)
                 .readTimeout(15, TimeUnit.SECONDS)
+                .callTimeout(18, TimeUnit.SECONDS)
             HttpClientProfile.SUGGESTIONS -> builder
                 .connectTimeout(12, TimeUnit.SECONDS)
                 .readTimeout(12, TimeUnit.SECONDS)

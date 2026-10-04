@@ -25,6 +25,7 @@ internal fun DashboardTagsSection(
         selectedIds = vm.activeTagFilterIds.toSet(),
         incognitoModeEnabled = vm.incognitoModeEnabled,
         isSubscribed = { tag -> vm.isRouteSubscribed(tag.type, tag.name) },
+        canSubscribe = { tag -> vm.canSubscribeRoute(tag.type) },
         onTagClick = vm::toggleTagFilter,
         onToggleSubscription = { tag ->
             val wasSubscribed = vm.isRouteSubscribed(tag.type, tag.name)

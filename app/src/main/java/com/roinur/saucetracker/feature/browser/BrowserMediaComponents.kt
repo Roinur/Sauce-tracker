@@ -177,6 +177,7 @@ import java.time.Instant
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.abs
 import kotlin.math.min
 
@@ -558,7 +559,10 @@ internal object GalleryBrowserThumbnailCache {
         cache.clear()
     }
 }
+private val galleryBrowserThumbnailFetchLocks = ConcurrentHashMap<String, Any>()
 
+// Kept for duplicate-analysis and privacy cleanup requests. Visible browser
+// thumbnails themselves use the shared persistent thumbnail pipeline below.
 internal val galleryBrowserImageClient: OkHttpClient by lazy {
     HttpClientFactory.create(HttpClientProfile.BROWSER_IMAGE)
 }
@@ -584,26 +588,18 @@ internal fun fetchGalleryBrowserThumbnail(
     }
     urls.forEach { url ->
         GalleryBrowserThumbnailCache.get(url)?.let { return it }
-        val request = Request.Builder()
-            .url(url)
-            .header(
-                "User-Agent",
-                "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36"
-            )
-            .header("Accept", "image/avif,image/webp,image/apng,image/*,*/*;q=0.8")
-            .header("Referer", "https://nhentai.net/")
-            .build()
-        val fetched = runCatching {
-            galleryBrowserImageClient.newCall(request).execute().use { rsp ->
-                if (!rsp.isSuccessful) return@use null
-                val bytes = rsp.body?.bytes() ?: return@use null
-                val options = BitmapFactory.Options().apply {
-                    inPreferredConfig = android.graphics.Bitmap.Config.RGB_565
-                }
-                val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options) ?: return@use null
-                bitmap.asImageBitmap()
+        val lock = galleryBrowserThumbnailFetchLocks.computeIfAbsent(url) { Any() }
+        val fetched = try {
+            synchronized(lock) {
+                GalleryBrowserThumbnailCache.get(url) ?: fetchThumbnailBitmap(
+                    context = context,
+                    url = url,
+                    lowRes = false
+                )
             }
-        }.getOrNull()
+        } finally {
+            galleryBrowserThumbnailFetchLocks.remove(url, lock)
+        }
         if (fetched != null) {
             urls.forEach { candidate -> GalleryBrowserThumbnailCache.put(candidate, fetched) }
             return fetched
@@ -611,4 +607,3 @@ internal fun fetchGalleryBrowserThumbnail(
     }
     return null
 }
-

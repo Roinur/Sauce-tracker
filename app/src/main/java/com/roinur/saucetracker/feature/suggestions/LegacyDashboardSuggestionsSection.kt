@@ -302,13 +302,13 @@ internal fun LegacyDashboardSuggestionsSection(
                                                         verticalArrangement = Arrangement.spacedBy(2.dp)
                                                     ) {
                                                         Text(
-                                                            text = "#${suggestion.code} â€¢ ${suggestion.title}",
+                                                            text = if (suggestion.sourceId == "nhentai") "#${suggestion.code} · ${suggestion.title}" else suggestion.title,
                                                             style = MaterialTheme.typography.bodyMedium,
                                                             maxLines = 2,
                                                             overflow = TextOverflow.Ellipsis
                                                         )
                                                         Text(
-                                                            text = "Pages: ${suggestion.numPages} â€¢ Uploaded: ${suggestion.uploadDate.ifBlank { "-" }}",
+                                                            text = "${suggestion.numPages} ${suggestion.unitLabel} · Uploaded: ${suggestion.uploadDate.ifBlank { "-" }}",
                                                             style = MaterialTheme.typography.bodySmall,
                                                             color = MaterialTheme.colorScheme.onSurfaceVariant
                                                         )

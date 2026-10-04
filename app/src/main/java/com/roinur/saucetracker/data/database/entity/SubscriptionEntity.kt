@@ -8,6 +8,8 @@ data class SubscriptionEntity(
     val notificationDotEnabled: Boolean,
     val initialized: Boolean,
     val createdAt: String,
-    val lastCheckedAt: String
+    val lastCheckedAt: String,
+    val profileId: String = "main",
+    val sourceId: String = "nhentai"
 )
 

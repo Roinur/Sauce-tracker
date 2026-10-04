@@ -43,9 +43,9 @@ import com.roinur.saucetracker.ThumbnailImage
 @Composable
 internal fun TasteTrainingDialog(vm: DashboardViewModel, onDismiss: () -> Unit) {
     val prompt = vm.tasteTrainingPrompts.firstOrNull()
-    var selected by remember(prompt?.code) { mutableStateOf(emptySet<String>()) }
-    var notMetadata by remember(prompt?.code) { mutableStateOf(false) }
-    var normallyLike by remember(prompt?.code) { mutableStateOf(false) }
+    var selected by remember(prompt?.sourceKey) { mutableStateOf(emptySet<String>()) }
+    var notMetadata by remember(prompt?.sourceKey) { mutableStateOf(false) }
+    var normallyLike by remember(prompt?.sourceKey) { mutableStateOf(false) }
     var reviewSaved by remember { mutableStateOf(false) }
 
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
@@ -74,11 +74,11 @@ internal fun TasteTrainingDialog(vm: DashboardViewModel, onDismiss: () -> Unit) 
                         modifier = Modifier.fillMaxWidth().heightIn(max = 420.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        items(vm.tasteTrainingFeedback, key = { it.code }) { feedback ->
+                        items(vm.tasteTrainingFeedback, key = { it.sourceKey }) { feedback ->
                             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(
-                                        "#${feedback.code} • ${feedback.rating}★",
+                                        "${if (feedback.sourceKey.startsWith("nhentai:")) "#${feedback.code}" else feedback.title.ifBlank { "MangaDex entry" }} • ${feedback.rating}★",
                                         modifier = Modifier.privacyObfuscate(
                                             enabled = false,
                                             overlayColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.92f),
@@ -96,7 +96,7 @@ internal fun TasteTrainingDialog(vm: DashboardViewModel, onDismiss: () -> Unit) 
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                 }
-                                TextButton(onClick = { vm.deleteTasteTrainingFeedback(feedback.code) }) { Text("Edit") }
+                                TextButton(onClick = { vm.deleteTasteTrainingFeedback(feedback.code, feedback.sourceKey) }) { Text("Edit") }
                             }
                         }
                     }
@@ -125,12 +125,12 @@ internal fun TasteTrainingDialog(vm: DashboardViewModel, onDismiss: () -> Unit) 
                             contentDescription = "Cover for training entry ${prompt.code}",
                             obscure = false,
                             preferLowRes = false,
-                            onClick = { vm.openSuggestedEntryInBrowser(prompt.code) },
+                            onClick = { vm.openTasteTrainingEntry(prompt) },
                             modifier = Modifier.width(104.dp).height(138.dp)
                         )
                         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
                             Text(
-                                "#${prompt.code}",
+                                if (prompt.sourceKey.startsWith("nhentai:")) "#${prompt.code}" else "MangaDex",
                                 modifier = Modifier.privacyObfuscate(
                                     enabled = false,
                                     overlayColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.92f),

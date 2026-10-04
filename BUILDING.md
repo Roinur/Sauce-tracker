@@ -11,7 +11,8 @@ Run these commands from the repository root.
 This is the default conveyor: incremental debug build, signature verification,
 automatic adb device detection, installation, and launch. It uses the established
 JDK 21, Gradle cache, Android debug key, and Android SDK paths. The fast lane keeps
-a Gradle daemon warm between runs; the heavier lanes use isolated processes.
+the warm build cache without a persistent Gradle daemon. Compilation uses a 3 GB
+heap and one worker so the debug/profile compilers do not exhaust memory together.
 
 ## Performance testing
 
@@ -29,7 +30,11 @@ the complete checks.
 .\sauce.bat verify
 ```
 
-Runs unit tests and a full profile build, then installs and launches it.
+Runs isolated 2.0 migration and Desktop Bridge regression checks, unit tests and
+a full profile build, then installs and launches it. The isolated checks require
+Node.js 22.13 or newer with `node:sqlite`; they never connect to a phone or use its
+library. Use `-NoInstall` for build-only validation. Real phone/provider QA and
+Verified Restore are separate release gates in `TEST_CHECKLIST_2.0.md`.
 
 ## Release build
 
@@ -37,7 +42,7 @@ Runs unit tests and a full profile build, then installs and launches it.
 .\sauce.bat release
 ```
 
-Builds the signed release APK. It never installs it automatically because the
+Runs the same isolated 2.0 regressions and builds the signed release APK. It never installs it automatically because the
 release package is separate from the rewrite development package.
 
 ## Useful switches

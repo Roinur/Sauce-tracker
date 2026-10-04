@@ -61,6 +61,13 @@ internal object BackupSnapshotExport {
         latestSnapshot: JSONObject,
         existingSnapshot: JSONObject?
     ): JSONObject {
+        // A 2.0 source-platform snapshot is a complete, relational view. Merging
+        // legacy rows into it can leave sessions, subscriptions and entries that
+        // no longer have matching source/profile records. Rolling Previous copies
+        // preserve the older backup without corrupting the new Current snapshot.
+        if (latestSnapshot.optJSONObject("source_platform") != null) {
+            return copyJsonObject(latestSnapshot)
+        }
         if (existingSnapshot == null) {
             return JSONObject(latestSnapshot.toString())
         }
@@ -120,6 +127,8 @@ internal object BackupSnapshotExport {
                     fallback = existingSnapshot.optJSONArray("subscriptions")
                 ) { obj ->
                     normalizeTextKey(
+                        obj.optString("profile_id", "main"),
+                        obj.optString("source_id", "nhentai"),
                         obj.optString("route_type", ""),
                         obj.optString("route_name", "")
                     )
@@ -132,6 +141,8 @@ internal object BackupSnapshotExport {
                     fallback = existingSnapshot.optJSONArray("subscription_seen_codes")
                 ) { obj ->
                     val routeKey = normalizeTextKey(
+                        obj.optString("profile_id", "main"),
+                        obj.optString("source_id", "nhentai"),
                         obj.optString("route_type", ""),
                         obj.optString("route_name", "")
                     ) ?: return@mergeJsonArrayKeepingPrimaryOrder null
@@ -146,6 +157,8 @@ internal object BackupSnapshotExport {
                     fallback = existingSnapshot.optJSONArray("subscription_events")
                 ) { obj ->
                     val routeKey = normalizeTextKey(
+                        obj.optString("profile_id", "main"),
+                        obj.optString("source_id", "nhentai"),
                         obj.optString("route_type", ""),
                         obj.optString("route_name", "")
                     ) ?: return@mergeJsonArrayKeepingPrimaryOrder null
@@ -191,12 +204,18 @@ internal object BackupSnapshotExport {
                     primary = latestSnapshot.optJSONArray("reading_sessions"),
                     fallback = existingSnapshot.optJSONArray("reading_sessions")
                 ) { obj ->
+                    val sessionKey = obj.optString("session_key", "").trim()
+                    if (sessionKey.isNotBlank()) return@mergeJsonArrayKeepingPrimaryOrder normalizeTextKey(
+                        obj.optString("profile_id", "main"), sessionKey
+                    )
                     val entryCode = obj.optInt("entry_code", 0).takeIf { it > 0 } ?: return@mergeJsonArrayKeepingPrimaryOrder null
                     normalizeTextKey(
+                        obj.optString("profile_id", "main"),
+                        obj.optString("source_id", "nhentai"),
+                        obj.optString("remote_id", entryCode.toString()),
                         obj.optString("started_at", ""),
                         obj.optString("ended_at", ""),
                         obj.optString("day_key", ""),
-                        entryCode.toString(),
                         obj.opt("pages_viewed")?.toString().orEmpty(),
                         obj.opt("seconds_elapsed")?.toString().orEmpty()
                     )
@@ -284,7 +303,9 @@ internal object BackupSnapshotExport {
         snapshot.put("suggestion_category_weights", suggestionCategoryWeightsForExport(prefs))
         snapshot.put("entry_pin_priority_enabled", entryPinPriorityEnabled)
         snapshot.put(PortablePreferences.SNAPSHOT_KEY, PortablePreferences.encode(prefs))
-        snapshot.put("version", snapshot.optInt("version", 5).coerceAtLeast(10))
+        snapshot.put("version", snapshot.optInt("version", 5).coerceAtLeast(20))
+        snapshot.put("format", "SAUCE_TRACKER_EXPORT_V2")
+        snapshot.put("exported_at", Instant.now().toString())
         return snapshot
     }
 

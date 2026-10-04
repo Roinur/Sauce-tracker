@@ -1,7 +1,7 @@
 package com.roinur.saucetracker.data.database
 
 internal object DatabaseSchema {
-    const val VERSION = 1
+    const val VERSION = 8
 
     object Tables {
         const val ENTRIES = "entries"
@@ -14,5 +14,10 @@ internal object DatabaseSchema {
         const val READING_SESSIONS = "reading_sessions"
         const val POPULAR_TAGS = "popular_tags"
         const val ENTRY_HEATMAP_CACHE = "entry_heatmap_cache"
+        const val SOURCES = "sources"
+        const val PROFILES = "profiles"
+        const val SOURCE_ENTRIES = "source_entries"
+        const val PROFILE_ENTRIES = "profile_entries"
+        const val SOURCE_CHAPTER_CACHE = "source_chapter_cache"
     }
 }

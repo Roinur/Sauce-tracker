@@ -1,6 +1,8 @@
 package com.roinur.saucetracker
 
 import android.net.Uri
+import java.net.URLDecoder
+import java.nio.charset.StandardCharsets
 import java.time.LocalDateTime
 import java.time.ZoneId
 import java.time.ZoneOffset
@@ -162,11 +164,13 @@ internal fun creatorSortPresets(): List<CreatorSortPreset> {
     )
 }
 
+private val tagNameWhitespace = Regex("\\s+")
+
 internal fun normalizeTagName(name: String): String {
     return name
         .trim()
         .lowercase(Locale.US)
-        .split(Regex("\\s+"))
+        .split(tagNameWhitespace)
         .filter { it.isNotBlank() }
         .joinToString(" ")
 }
@@ -174,6 +178,7 @@ internal fun normalizeTagName(name: String): String {
 internal fun normalizeSubscriptionRouteType(rawType: String): String {
     return when (rawType.trim().lowercase(Locale.US)) {
         "artist" -> "artist"
+        "author" -> "author"
         "group" -> "group"
         "tag", "tags" -> "tag"
         "language" -> "language"
@@ -187,10 +192,13 @@ internal fun normalizeSubscriptionRouteType(rawType: String): String {
 internal fun normalizeSubscriptionRouteName(routeType: String, rawName: String): String {
     val normalizedType = normalizeSubscriptionRouteType(routeType)
     if (normalizedType.isBlank()) return ""
-    return when (normalizedType) {
-        "artist", "group" -> parseCreatorSlug(rawName).ifBlank { rawName.trim() }
-        else -> parseCreatorSlug(rawName).ifBlank { rawName.trim() }
-    }.trim().replace(Regex("\\s+"), " ")
+    return runCatching {
+        URLDecoder.decode(rawName.trim(), StandardCharsets.UTF_8.name())
+    }.getOrDefault(rawName.trim())
+        .replace("+", " ")
+        .replace("_", " ")
+        .trim()
+        .replace(Regex("\\s+"), " ")
 }
 
 internal fun subscriptionRouteKey(routeType: String, routeName: String): String {
@@ -216,7 +224,7 @@ internal fun buildSubscriptionRouteUrl(routeType: String, routeName: String, pag
     val normalizedType = normalizeSubscriptionRouteType(routeType)
     val normalizedName = normalizeSubscriptionRouteName(normalizedType, routeName)
     if (normalizedType.isBlank() || normalizedName.isBlank()) return ""
-    val slug = if (normalizedType == "artist" || normalizedType == "group") {
+    val slug = if (normalizedType == "artist" || normalizedType == "author" || normalizedType == "group") {
         toCreatorUrlSlug(normalizedName)
     } else {
         parseCreatorSlug(normalizedName)
@@ -227,9 +235,9 @@ internal fun buildSubscriptionRouteUrl(routeType: String, routeName: String, pag
     val safePage = page.coerceAtLeast(1)
     val encodedSlug = Uri.encode(slug)
     return if (safePage <= 1) {
-        "https://nhentai.net/$normalizedType/$encodedSlug/"
+        "https://nhentai.net/${if (normalizedType == "author") "artist" else normalizedType}/$encodedSlug/"
     } else {
-        "https://nhentai.net/$normalizedType/$encodedSlug/?page=$safePage"
+        "https://nhentai.net/${if (normalizedType == "author") "artist" else normalizedType}/$encodedSlug/?page=$safePage"
     }
 }
 

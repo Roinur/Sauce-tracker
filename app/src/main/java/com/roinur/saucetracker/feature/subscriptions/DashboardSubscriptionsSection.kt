@@ -49,7 +49,7 @@ internal fun DashboardSubscriptionsSection(
                     val experimentalSubscriptionSurface = !vm.legacyHomeUi && vm.experimentalSubscriptionInbox
                     if (experimentalSubscriptionSurface) {
                         ModernSubscriptionsPage(
-                            subscriptionCount = vm.subscriptions.size,
+                            subscriptionCount = vm.logicalSubscriptionCount,
                             events = vm.visibleSubscriptionEvents,
                             selectedEventId = selectedEventId,
                             refreshRunning = vm.subscriptionRefreshRunning,
@@ -144,7 +144,7 @@ internal fun DashboardSubscriptionsSection(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 } else if (!vm.subscriptionsCardCollapsed) {
-                    val subscriptionCount = vm.subscriptions.size
+                    val subscriptionCount = vm.logicalSubscriptionCount
                     val eventCount = vm.visibleSubscriptionEvents.size
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -263,7 +263,11 @@ internal fun DashboardSubscriptionsSection(
                                                     verticalArrangement = Arrangement.spacedBy(2.dp)
                                                 ) {
                                                     Text(
-                                                        text = "#${event.code} • ${event.title}",
+                                                        text = if (event.sourceId == "nhentai") {
+                                                            "#${event.code} • ${event.title}"
+                                                        } else {
+                                                            event.title
+                                                        },
                                                         style = MaterialTheme.typography.bodyMedium,
                                                         maxLines = 2,
                                                         overflow = TextOverflow.Ellipsis
@@ -286,8 +290,8 @@ internal fun DashboardSubscriptionsSection(
                                             if (selected) {
                                                 SubscriptionEventDetailCard(
                                                     event = event,
-                                                    onOpen = { vm.openSuggestedEntryInBrowser(event.code) },
-                                                    onImport = { vm.importSubscriptionEvent(event.code) },
+                                                    onOpen = { vm.openSubscriptionEvent(event) },
+                                                    onImport = { vm.importSubscriptionEvent(event) },
                                                     onDismiss = {
                                                         onSelectedEventIdChange(null)
                                                         vm.dismissSubscriptionEvent(event.id)

@@ -145,19 +145,26 @@ internal fun SlideshowScreen(
     initialReadingMode: SlideshowReadingMode,
     initialHorizontalDirection: SlideshowHorizontalDirection,
     volumeNavigationEvents: SharedFlow<SlideshowVolumeNavigation>,
-    localPageUris: List<String>,
+    explicitPageUris: List<String>,
+    explicitFallbackPageUris: List<String> = emptyList(),
     onPageViewed: (Int) -> Unit,
-    onDone: () -> Unit
+    onDone: () -> Unit,
+    onReachedEnd: () -> Unit = onDone,
+    onReachedStart: () -> Unit = {},
+    nextChapterLabel: String? = null,
+    previousChapterLabel: String? = null,
+    onSaveRawPage: () -> Unit = {},
+    onExplicitPageLoadFailed: () -> Unit = {}
 ) {
     val slideshowViewModel: SlideshowViewModel = androidx.lifecycle.viewmodel.compose.viewModel()
     val context = LocalContext.current
-    val hasLocalPages = localPageUris.isNotEmpty()
-    val safePages = if (hasLocalPages) {
-        localPageUris.size.coerceAtLeast(0)
+    val hasExplicitPages = explicitPageUris.isNotEmpty()
+    val safePages = if (hasExplicitPages) {
+        explicitPageUris.size.coerceAtLeast(0)
     } else {
         numPages.coerceAtLeast(0)
     }
-    val hasData = if (hasLocalPages) {
+    val hasData = if (hasExplicitPages) {
         safePages > 0
     } else {
         mediaId > 0L && safePages > 0
@@ -173,7 +180,7 @@ internal fun SlideshowScreen(
     var requestedReadingModeName by rememberSaveable { mutableStateOf<String?>(null) }
     var rememberedPageIndex by rememberSaveable { mutableStateOf(initialPage) }
     var pendingModeSwitchPageIndex by rememberSaveable { mutableStateOf<Int?>(null) }
-    var chooserHighlightedMode by remember { mutableStateOf<SlideshowReadingMode?>(null) }
+    var chooserHighlightedChoice by remember { mutableStateOf<SlideshowHoldChoice?>(null) }
     var immersionMode by rememberSaveable { mutableStateOf(false) }
     var modeSwitchInFlight by rememberSaveable { mutableStateOf(false) }
     val readingMode = SlideshowReadingMode.entries.firstOrNull { it.name == readingModeName } ?: initialReadingMode
@@ -330,13 +337,25 @@ internal fun SlideshowScreen(
         widthPx: Float,
         heightPx: Float
     ) {
-        chooserHighlightedMode = mapSlideshowModeChoice(
+        chooserHighlightedChoice = mapSlideshowHoldChoice(
             x = x,
             y = y,
             screenWidthPx = widthPx,
             screenHeightPx = heightPx,
-            density = density.density
-        ) ?: chooserHighlightedMode ?: readingMode
+            density = density.density,
+            screenshotEnabled = !incognitoModeEnabled
+        ) ?: chooserHighlightedChoice ?: readingMode.toHoldChoice()
+    }
+
+    fun commitChooserChoice() {
+        when (chooserHighlightedChoice) {
+            SlideshowHoldChoice.HORIZONTAL -> setReadingMode(SlideshowReadingMode.HORIZONTAL)
+            SlideshowHoldChoice.VERTICAL -> setReadingMode(SlideshowReadingMode.VERTICAL)
+            SlideshowHoldChoice.SCREENSHOT -> if (!incognitoModeEnabled) onSaveRawPage()
+            null -> Unit
+        }
+        showModeChooser = false
+        chooserHighlightedChoice = null
     }
 
     LaunchedEffect(hasData, safePages, pagerState.currentPage, readingMode, pendingModeSwitchPageIndex) {
@@ -445,8 +464,8 @@ internal fun SlideshowScreen(
         onDone()
     }
 
-    LaunchedEffect(hasData, hasLocalPages, mediaId, safePages, coverExt, pagerState.currentPage) {
-        if (!hasData || hasLocalPages) return@LaunchedEffect
+    LaunchedEffect(hasData, hasExplicitPages, mediaId, safePages, coverExt, pagerState.currentPage) {
+        if (!hasData || hasExplicitPages) return@LaunchedEffect
         val currentPage = pagerState.currentPage + 1
         withContext(Dispatchers.IO) {
             listOf(currentPage + 1, currentPage + 2)
@@ -458,6 +477,31 @@ internal fun SlideshowScreen(
                         preferredExt = coverExt
                     )
                 }
+        }
+    }
+
+    LaunchedEffect(
+        hasData,
+        hasExplicitPages,
+        explicitPageUris,
+        explicitFallbackPageUris,
+        pagerState.currentPage,
+        currentVerticalPageIndex,
+        readingMode
+    ) {
+        if (!hasData || !hasExplicitPages) return@LaunchedEffect
+        val current = if (readingMode == SlideshowReadingMode.HORIZONTAL) {
+            pagerState.currentPage
+        } else {
+            currentVerticalPageIndex
+        }.coerceIn(0, safePages - 1)
+        withContext(Dispatchers.IO) {
+            prefetchExplicitGalleryPages(
+                context = context,
+                pageUris = explicitPageUris,
+                fallbackPageUris = explicitFallbackPageUris,
+                currentIndex = current
+            )
         }
     }
 
@@ -482,7 +526,7 @@ internal fun SlideshowScreen(
                             if (longPress == null) return@awaitEachGesture
 
                             showModeChooser = true
-                            chooserHighlightedMode = readingMode
+                            chooserHighlightedChoice = readingMode.toHoldChoice()
                             updateChooserHover(
                                 x = longPress.position.x,
                                 y = longPress.position.y,
@@ -497,7 +541,7 @@ internal fun SlideshowScreen(
                                 if (change == null) {
                                     finished = true
                                 } else if (!change.pressed || change.changedToUpIgnoreConsumed()) {
-                                    chooserHighlightedMode?.let { setReadingMode(it) }
+                                    commitChooserChoice()
                                     finished = true
                                 } else {
                                     updateChooserHover(
@@ -509,7 +553,7 @@ internal fun SlideshowScreen(
                                 }
                             }
                             showModeChooser = false
-                            chooserHighlightedMode = null
+                            chooserHighlightedChoice = null
                         }
                     }
         ) {
@@ -535,6 +579,27 @@ internal fun SlideshowScreen(
                     modifier = Modifier
                         .fillMaxSize()
                         .graphicsLayer(alpha = slideshowContentAlpha)
+                        .pointerInput(readingMode, previousChapterLabel, nextChapterLabel, safePages, mangaDirection) {
+                            if (readingMode != SlideshowReadingMode.HORIZONTAL) return@pointerInput
+                            awaitEachGesture {
+                                val down = awaitFirstDown(pass = PointerEventPass.Initial, requireUnconsumed = false)
+                                val startedPage = pagerState.currentPage
+                                while (true) {
+                                    val event = awaitPointerEvent(pass = PointerEventPass.Initial)
+                                    val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                                    val dx = change.position.x - down.position.x
+                                    val previousBoundary = previousChapterLabel != null && (
+                                        (!mangaDirection && startedPage == 0 && dx > 72.dp.toPx()) ||
+                                            (mangaDirection && startedPage == safePages - 1 && dx < -72.dp.toPx())
+                                        )
+                                    if (previousBoundary) {
+                                        onReachedStart()
+                                        break
+                                    }
+                                    if (change.changedToUpIgnoreConsumed() || !change.pressed) break
+                                }
+                            }
+                        }
                 ) {
                 when (readingMode) {
                     SlideshowReadingMode.HORIZONTAL -> {
@@ -561,7 +626,7 @@ internal fun SlideshowScreen(
                                             }
                                             return@awaitEachGesture
                                         }
-                                        val down = awaitFirstDown(pass = PointerEventPass.Final, requireUnconsumed = false)
+                                        val down = awaitFirstDown(pass = PointerEventPass.Initial, requireUnconsumed = false)
                                         if (!hasData || safePages <= 0) return@awaitEachGesture
 
                                         val lastPage = safePages - 1
@@ -570,16 +635,23 @@ internal fun SlideshowScreen(
                                         var totalDx = 0f
                                         var totalDy = 0f
                                         while (true) {
-                                            val event = awaitPointerEvent(pass = PointerEventPass.Final)
+                                            val event = awaitPointerEvent(pass = PointerEventPass.Initial)
                                             val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                                            val delta = change.positionChange()
-                                            totalDx += delta.x
-                                            totalDy += delta.y
+                                            totalDx = change.position.x - down.position.x
+                                            totalDy = change.position.y - down.position.y
                                             if (!movedPastTapSlop && (abs(totalDx) > tapSlopPx || abs(totalDy) > tapSlopPx)) {
                                                 movedPastTapSlop = true
                                             }
+                                            if (!mangaDirection && startedPage == 0 && totalDx > exitSwipeThresholdPx && previousChapterLabel != null) {
+                                                onReachedStart()
+                                                break
+                                            }
+                                            if (mangaDirection && startedPage == lastPage && totalDx < -exitSwipeThresholdPx && previousChapterLabel != null) {
+                                                onReachedStart()
+                                                break
+                                            }
                                             if (startedPage == lastPage && totalDx < -exitSwipeThresholdPx) {
-                                                onDone()
+                                                onReachedEnd()
                                                 break
                                             }
                                             if (change.changedToUpIgnoreConsumed() || !change.pressed) {
@@ -590,9 +662,9 @@ internal fun SlideshowScreen(
                                                         if (safePages > 1) jumpToRelativePage(if (mangaDirection) 1 else -1)
                                                     } else {
                                                         if (mangaDirection) {
-                                                            if (pagerState.currentPage <= 0) onDone() else jumpToRelativePage(-1)
+                                                            if (pagerState.currentPage <= 0) onReachedEnd() else jumpToRelativePage(-1)
                                                         } else {
-                                                            if (pagerState.currentPage >= safePages - 1) onDone() else jumpToRelativePage(1)
+                                                            if (pagerState.currentPage >= safePages - 1) onReachedEnd() else jumpToRelativePage(1)
                                                         }
                                                     }
                                                 }
@@ -602,11 +674,13 @@ internal fun SlideshowScreen(
                                     }
                                 }
                         ) { index ->
-                            if (hasLocalPages) {
+                            if (hasExplicitPages) {
                                 LocalGalleryPage(
-                                    pageUriString = localPageUris.getOrNull(index).orEmpty(),
+                                    pageUriString = explicitPageUris.getOrNull(index).orEmpty(),
+                                    fallbackPageUriString = explicitFallbackPageUris.getOrNull(index).orEmpty(),
                                     pageNumber = index + 1,
-                                    obscure = incognitoModeEnabled
+                                    obscure = incognitoModeEnabled,
+                                    onLoadFailed = onExplicitPageLoadFailed
                                 )
                             } else {
                                 GalleryPage(
@@ -634,9 +708,10 @@ internal fun SlideshowScreen(
                             verticalArrangement = Arrangement.spacedBy(14.dp)
                         ) {
                             items(safePages, key = { it }) { index ->
-                                if (hasLocalPages) {
+                                if (hasExplicitPages) {
                                     VerticalLocalGalleryPageCard(
-                                        pageUriString = localPageUris.getOrNull(index).orEmpty(),
+                                        pageUriString = explicitPageUris.getOrNull(index).orEmpty(),
+                                        fallbackPageUriString = explicitFallbackPageUris.getOrNull(index).orEmpty(),
                                         pageNumber = index + 1,
                                         obscure = incognitoModeEnabled,
                                         showPageLabel = false,
@@ -644,12 +719,12 @@ internal fun SlideshowScreen(
                                         onCenterTap = { immersionMode = !immersionMode },
                                         onCenterLongPress = {
                                             showModeChooser = true
-                                            chooserHighlightedMode = readingMode
+                                            chooserHighlightedChoice = readingMode.toHoldChoice()
                                         },
                                         rootViewportSize = rootViewportSize,
                                         onStartModeChooser = { x, y ->
                                             showModeChooser = true
-                                            chooserHighlightedMode = readingMode
+                                            chooserHighlightedChoice = readingMode.toHoldChoice()
                                             updateChooserHover(
                                                 x = x,
                                                 y = y,
@@ -666,9 +741,7 @@ internal fun SlideshowScreen(
                                             )
                                         },
                                         onFinishModeChooser = {
-                                            chooserHighlightedMode?.let { setReadingMode(it) }
-                                            showModeChooser = false
-                                            chooserHighlightedMode = null
+                                            commitChooserChoice()
                                         }
                                     )
                                 } else {
@@ -682,12 +755,12 @@ internal fun SlideshowScreen(
                                         onCenterTap = { immersionMode = !immersionMode },
                                         onCenterLongPress = {
                                             showModeChooser = true
-                                            chooserHighlightedMode = readingMode
+                                            chooserHighlightedChoice = readingMode.toHoldChoice()
                                         },
                                         rootViewportSize = rootViewportSize,
                                         onStartModeChooser = { x, y ->
                                             showModeChooser = true
-                                            chooserHighlightedMode = readingMode
+                                            chooserHighlightedChoice = readingMode.toHoldChoice()
                                             updateChooserHover(
                                                 x = x,
                                                 y = y,
@@ -704,9 +777,7 @@ internal fun SlideshowScreen(
                                             )
                                         },
                                         onFinishModeChooser = {
-                                            chooserHighlightedMode?.let { setReadingMode(it) }
-                                            showModeChooser = false
-                                            chooserHighlightedMode = null
+                                            commitChooserChoice()
                                         }
                                     )
                                 }
@@ -791,12 +862,18 @@ internal fun SlideshowScreen(
                                     TextButton(
                                         onClick = {
                                             if (mangaDirection) {
-                                                if (pagerState.currentPage < safePages - 1) jumpToRelativePage(1)
+                                                if (pagerState.currentPage < safePages - 1) jumpToRelativePage(1) else if (previousChapterLabel != null) onReachedStart()
                                             } else if (pagerState.currentPage > 0) {
                                                 jumpToRelativePage(-1)
+                                            } else if (previousChapterLabel != null) {
+                                                onReachedStart()
                                             }
                                         },
-                                        enabled = if (mangaDirection) pagerState.currentPage < safePages - 1 else pagerState.currentPage > 0
+                                        enabled = if (mangaDirection) {
+                                            pagerState.currentPage < safePages - 1 || previousChapterLabel != null
+                                        } else {
+                                            pagerState.currentPage > 0 || previousChapterLabel != null
+                                        }
                                     ) {
                                         Text(if (mangaDirection) "Next" else "Prev", fontWeight = FontWeight.SemiBold)
                                     }
@@ -810,17 +887,17 @@ internal fun SlideshowScreen(
                                     TextButton(
                                         onClick = {
                                             if (mangaDirection) {
-                                                if (pagerState.currentPage > 0) jumpToRelativePage(-1) else onDone()
+                                                if (pagerState.currentPage > 0) jumpToRelativePage(-1) else onReachedEnd()
                                             } else {
-                                                if (pagerState.currentPage < safePages - 1) jumpToRelativePage(1) else onDone()
+                                                if (pagerState.currentPage < safePages - 1) jumpToRelativePage(1) else onReachedEnd()
                                             }
                                         },
                                         enabled = hasData
                                     ) {
                                         Text(
                                             when {
-                                                mangaDirection && pagerState.currentPage <= 0 -> "Exit"
-                                                !mangaDirection && pagerState.currentPage >= safePages - 1 -> "Exit"
+                                                mangaDirection && pagerState.currentPage <= 0 -> nextChapterLabel ?: "Exit"
+                                                !mangaDirection && pagerState.currentPage >= safePages - 1 -> nextChapterLabel ?: "Exit"
                                                 mangaDirection -> "Prev"
                                                 else -> "Next"
                                             },
@@ -883,7 +960,7 @@ internal fun SlideshowScreen(
                                     if (change == null) {
                                         finished = true
                                     } else if (!change.pressed || change.changedToUpIgnoreConsumed()) {
-                                        chooserHighlightedMode?.let { setReadingMode(it) }
+                                        commitChooserChoice()
                                         finished = true
                                     } else {
                                         updateChooserHover(
@@ -895,12 +972,13 @@ internal fun SlideshowScreen(
                                     }
                                 }
                                 showModeChooser = false
-                                chooserHighlightedMode = null
+                                chooserHighlightedChoice = null
                             }
                         }
                 ) {
                     SlideshowReadingModeChooser(
-                        currentMode = chooserHighlightedMode ?: readingMode
+                        highlightedChoice = chooserHighlightedChoice ?: readingMode.toHoldChoice(),
+                        screenshotEnabled = !incognitoModeEnabled
                     )
                 }
             }

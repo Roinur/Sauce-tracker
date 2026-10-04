@@ -1,5 +1,9 @@
 package com.roinur.saucetracker.data.database
 
+import com.roinur.saucetracker.data.backup.SourcePlatformBackup
+import com.roinur.saucetracker.data.backup.BackupHistoryValidation
+import com.roinur.saucetracker.data.backup.RestoreProfileRouting
+
 import com.roinur.saucetracker.core.media.*
 import com.roinur.saucetracker.core.diagnostics.GitHubMediaSession
 import com.roinur.saucetracker.core.time.UserCalendar
@@ -22,6 +26,14 @@ import com.roinur.saucetracker.data.database.dao.SqliteTagDao
 import com.roinur.saucetracker.data.database.dao.SubscriptionDao
 import com.roinur.saucetracker.data.database.dao.TagDao
 import com.roinur.saucetracker.data.database.entity.RelatedEntryEntity
+import com.roinur.saucetracker.data.profile.ProfileEntryState
+import com.roinur.saucetracker.data.profile.ProfileStore
+import com.roinur.saucetracker.data.source.SourceEntry
+import com.roinur.saucetracker.data.source.SourceEntryKey
+import com.roinur.saucetracker.data.source.SourceEntryStore
+import com.roinur.saucetracker.data.source.SourceId
+import com.roinur.saucetracker.data.source.SourceTag
+import com.roinur.saucetracker.data.source.uiCode
 import com.roinur.saucetracker.feature.heatmap.TrendBucketGranularity
 import com.roinur.saucetracker.feature.heatmap.TrendBucketMode
 import com.roinur.saucetracker.feature.heatmap.TrendPoint
@@ -33,6 +45,7 @@ import com.roinur.saucetracker.feature.heatmap.TrendTargetKind
 import com.roinur.saucetracker.feature.heatmap.thirtyDayRateFactor
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
 import java.time.Instant
 import java.time.LocalDate
 import java.time.YearMonth
@@ -40,6 +53,28 @@ import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 import java.time.temporal.ChronoUnit
 import java.util.Locale
+import java.util.Base64
+import java.util.UUID
+
+data class SourceReaderProgress(
+    val chapterId: String,
+    val pageIndex: Int
+)
+
+data class SourceChapterReadingState(
+    val resume: SourceReaderProgress?,
+    val chapters: Map<String, SourceChapterProgress>
+)
+
+data class SourceChapterProgress(
+    val chapterId: String,
+    val furthestPageIndex: Int,
+    val pageCount: Int,
+    val completed: Boolean
+) {
+    val fraction: Float
+        get() = if (pageCount <= 0) 0f else ((furthestPageIndex + 1f) / pageCount).coerceIn(0f, 1f)
+}
 
 class SauceTrackerDatabase(
     private val appContext: Context,
@@ -56,6 +91,12 @@ class SauceTrackerDatabase(
     internal val historyDao: HistoryDao by lazy { SqliteHistoryDao(this) }
     internal val subscriptionDao: SubscriptionDao by lazy { SqliteSubscriptionDao(this) }
     internal val heatmapCacheDao: HeatmapCacheDao by lazy { SqliteHeatmapCacheDao(this) }
+    // SQLiteOpenHelper invokes onUpgrade while writableDatabase is opened in init.
+    // All snapshot state must therefore be initialized before that first open.
+    private val preMigrationTables = listOf(
+        "entries", "tags", "entry_tags", "subscriptions", "subscription_seen_codes",
+        "subscription_events", "daily_read_activity", "reading_sessions", "popular_tags", "entry_heatmap_cache"
+    )
     init {
         migrateSchema(writableDatabase)
         if (databaseNameOverride == null) {
@@ -217,10 +258,184 @@ class SauceTrackerDatabase(
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_subscriptions_route_type ON subscriptions(route_type)")
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_subscription_events_subscription_id ON subscription_events(subscription_id)")
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_subscription_events_dismissed ON subscription_events(dismissed, pinned, discovered_at)")
+        ensureV2Schema(db)
+        ensureV3Schema(db)
+        ensureV4Schema(db)
+        ensureV5Schema(db)
+        ensureV6Schema(db)
+        ensureV7Schema(db)
+        ensureV8Schema(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        // Schema version 1 only.
+        if (oldVersion < 2 && newVersion >= 2) {
+            createAndValidatePreMigrationSnapshot(db, oldVersion)
+            ensureV2Schema(db)
+            validateV2Migration(db)
+        }
+        if (oldVersion < 3 && newVersion >= 3) {
+            ensureV3Schema(db)
+        }
+        if (oldVersion < 4 && newVersion >= 4) {
+            ensureV4Schema(db)
+        }
+        if (oldVersion < 5 && newVersion >= 5) {
+            ensureV5Schema(db)
+        }
+        if (oldVersion < 6 && newVersion >= 6) {
+            ensureV6Schema(db)
+        }
+        if (oldVersion < 7 && newVersion >= 7) {
+            ensureV7Schema(db)
+        }
+        if (oldVersion < 8 && newVersion >= 8) {
+            ensureV8Schema(db)
+        }
+    }
+
+    private fun preMigrationRows(db: SQLiteDatabase, table: String): JSONArray {
+        val rows = JSONArray()
+        db.rawQuery("SELECT * FROM $table", null).use { cursor ->
+            while (cursor.moveToNext()) rows.put(preMigrationRow(cursor))
+        }
+        return rows
+    }
+
+    private fun preMigrationRow(cursor: android.database.Cursor): JSONObject = JSONObject().also { row ->
+        cursor.columnNames.forEachIndexed { index, name ->
+            when (cursor.getType(index)) {
+                android.database.Cursor.FIELD_TYPE_NULL -> row.put(name, JSONObject.NULL)
+                android.database.Cursor.FIELD_TYPE_INTEGER -> row.put(name, cursor.getLong(index))
+                android.database.Cursor.FIELD_TYPE_FLOAT -> row.put(name, cursor.getDouble(index))
+                else -> row.put(name, cursor.getString(index))
+            }
+        }
+    }
+
+    private fun preMigrationRowSignature(row: JSONObject): String =
+        row.keys().asSequence().toList().sorted().joinToString("|") { key ->
+            val value = row.opt(key)
+            val encoded = when (value) {
+                null, JSONObject.NULL -> "null"
+                is Number -> "number:$value"
+                is Boolean -> "boolean:$value"
+                else -> "string:${JSONObject.quote(value.toString())}"
+            }
+            "${JSONObject.quote(key)}=$encoded"
+        }
+
+    private fun validatePreMigrationSnapshot(db: SQLiteDatabase, snapshot: JSONObject, oldVersion: Int) {
+        require(snapshot.optInt("schema_version", -1) == oldVersion) { "Pre-migration snapshot schema does not match." }
+        require(snapshot.optJSONArray("entries") != null) { "Pre-migration snapshot has no entries table." }
+        preMigrationTables.forEach { table ->
+            val exists = db.rawQuery("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", arrayOf(table)).use { it.moveToFirst() }
+            val saved = snapshot.optJSONArray(table)
+            require(exists == (saved != null)) { "Pre-migration snapshot table set does not match." }
+            if (!exists) return@forEach
+            val savedRowsArray = checkNotNull(saved)
+            val remaining = HashMap<String, Int>()
+            for (index in 0 until savedRowsArray.length()) {
+                val signature = preMigrationRowSignature(savedRowsArray.getJSONObject(index))
+                remaining[signature] = (remaining[signature] ?: 0) + 1
+            }
+            var currentCount = 0
+            db.rawQuery("SELECT * FROM $table", null).use { cursor ->
+                while (cursor.moveToNext()) {
+                    currentCount += 1
+                    val signature = preMigrationRowSignature(preMigrationRow(cursor))
+                    val count = remaining[signature] ?: 0
+                    require(count > 0) { "Pre-migration snapshot contents do not match." }
+                    if (count == 1) remaining.remove(signature) else remaining[signature] = count - 1
+                }
+            }
+            require(currentCount == savedRowsArray.length() && remaining.isEmpty()) {
+                "Pre-migration snapshot row count does not match."
+            }
+        }
+    }
+
+    private fun createAndValidatePreMigrationSnapshot(db: SQLiteDatabase, oldVersion: Int) {
+        if (databaseNameOverride != null) return
+        val directory = File(appContext.filesDir, "migration-snapshots").apply { mkdirs() }
+        val originalTarget = File(directory, "sauce-tracker-before-v2.json")
+        val existingSnapshots = directory.listFiles()
+            ?.filter { it.isFile && it.name.startsWith("sauce-tracker-before-v2") && it.extension == "json" }
+            ?.sortedByDescending { it.lastModified() }
+            .orEmpty()
+        for (existing in existingSnapshots) {
+            val valid = try {
+                validatePreMigrationSnapshot(db, JSONObject(existing.readText(Charsets.UTF_8)), oldVersion)
+                true
+            } catch (_: Exception) {
+                false
+            }
+            if (valid) return
+        }
+        // A stale snapshot may predate new 1.9 activity after an interrupted
+        // upgrade. Preserve it and write a newly validated file, never reuse it.
+        val target = if (originalTarget.exists()) {
+            File(directory, "sauce-tracker-before-v2-${UUID.randomUUID()}.json")
+        } else originalTarget
+        val root = JSONObject().put("schema_version", oldVersion).put("created_at", Instant.now().toString())
+        preMigrationTables.forEach { table ->
+            val exists = db.rawQuery("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", arrayOf(table)).use { it.moveToFirst() }
+            if (!exists) return@forEach
+            root.put(table, preMigrationRows(db, table))
+        }
+        val temporary = File(directory, "${target.name}.tmp")
+        temporary.writeText(root.toString(), Charsets.UTF_8)
+        val verified = JSONObject(temporary.readText(Charsets.UTF_8))
+        validatePreMigrationSnapshot(db, verified, oldVersion)
+        require(temporary.renameTo(target)) { "Could not finalize pre-migration snapshot." }
+    }
+
+    private fun validateV2Migration(db: SQLiteDatabase) {
+        val legacyCount = db.rawQuery("SELECT COUNT(*) FROM entries", null).use { it.moveToFirst(); it.getLong(0) }
+        val migratedCount = db.rawQuery("SELECT COUNT(*) FROM source_entries WHERE source_id='nhentai'", null).use { it.moveToFirst(); it.getLong(0) }
+        val profileCount = db.rawQuery("SELECT COUNT(*) FROM profiles WHERE id='main'", null).use { it.moveToFirst(); it.getLong(0) }
+        val orphanCount = db.rawQuery("SELECT COUNT(*) FROM profile_entries pe LEFT JOIN profiles p ON p.id=pe.profile_id LEFT JOIN source_entries se ON se.id=pe.source_entry_id WHERE p.id IS NULL OR se.id IS NULL", null).use { it.moveToFirst(); it.getLong(0) }
+        val stateMismatchCount = db.rawQuery("""
+            SELECT COUNT(*) FROM entries e
+            LEFT JOIN source_entries se ON se.source_id='nhentai' AND se.remote_id=CAST(e.code AS TEXT)
+            LEFT JOIN profile_entries pe ON pe.source_entry_id=se.id AND pe.profile_id='main'
+            WHERE se.id IS NULL OR pe.source_entry_id IS NULL
+               OR COALESCE(pe.rating,0)<>COALESCE(e.rating,0)
+               OR COALESCE(pe.read_state,0)<>COALESCE(e.read_state,0)
+               OR COALESCE(pe.pinned,0)<>COALESCE(e.pinned,0)
+               OR COALESCE(pe.added_at,'')<>COALESCE(e.added_at,'')
+               OR COALESCE(pe.read_at,'')<>COALESCE(e.read_at,'')
+        """.trimIndent(), null).use { it.moveToFirst(); it.getLong(0) }
+        val missingTagCount = db.rawQuery("""
+            SELECT COUNT(*) FROM entry_tags et
+            LEFT JOIN tags t ON t.id=et.tag_id
+            LEFT JOIN source_entries se ON se.source_id='nhentai' AND se.remote_id=CAST(et.entry_code AS TEXT)
+            LEFT JOIN source_entry_tags st ON st.source_entry_id=se.id AND st.type=t.type AND st.normalized_name=t.normalized_name
+            WHERE st.source_entry_id IS NULL
+        """.trimIndent(), null).use { it.moveToFirst(); it.getLong(0) }
+        val missingCreatorCount = db.rawQuery("""
+            SELECT COUNT(*) FROM entry_tags et JOIN tags t ON t.id=et.tag_id AND t.type IN ('artist','group')
+            LEFT JOIN source_entries se ON se.source_id='nhentai' AND se.remote_id=CAST(et.entry_code AS TEXT)
+            LEFT JOIN source_entry_creators sc ON sc.source_entry_id=se.id AND sc.type=t.type AND sc.normalized_name=t.normalized_name
+            WHERE sc.source_entry_id IS NULL
+        """.trimIndent(), null).use { it.moveToFirst(); it.getLong(0) }
+        val sessionMismatchCount = db.rawQuery("""
+            SELECT COUNT(*) FROM reading_sessions
+            WHERE entry_code>0 AND (profile_id<>'main' OR source_id<>'nhentai' OR remote_id<>CAST(entry_code AS TEXT))
+        """.trimIndent(), null).use { it.moveToFirst(); it.getLong(0) }
+        val subscriptionMismatchCount = db.rawQuery("""
+            SELECT COUNT(*) FROM subscriptions
+            WHERE profile_id<>'main' OR source_id<>'nhentai' OR route_key NOT LIKE 'main|nhentai|%'
+        """.trimIndent(), null).use { it.moveToFirst(); it.getLong(0) }
+        val eventMismatchCount = db.rawQuery("""
+            SELECT COUNT(*) FROM subscription_events
+            WHERE code>0 AND (source_id<>'nhentai' OR remote_id<>CAST(code AS TEXT))
+        """.trimIndent(), null).use { it.moveToFirst(); it.getLong(0) }
+        val foreignKeyErrors = db.rawQuery("PRAGMA foreign_key_check", null).use { it.moveToFirst() }
+        require(
+            legacyCount == migratedCount && profileCount == 1L && orphanCount == 0L && stateMismatchCount == 0L &&
+                missingTagCount == 0L && missingCreatorCount == 0L && sessionMismatchCount == 0L &&
+                subscriptionMismatchCount == 0L && eventMismatchCount == 0L && !foreignKeyErrors
+        ) { "Sauce Tracker 2.0 migration integrity check failed." }
     }
 
     private fun migrateSchema(db: SQLiteDatabase) {
@@ -438,6 +653,346 @@ class SauceTrackerDatabase(
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_reading_sessions_day_key ON reading_sessions(day_key)")
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_reading_sessions_entry_code ON reading_sessions(entry_code)")
         backfillDailyReadActivityIfNeeded(db)
+        ensureV2Schema(db)
+        ensureV3Schema(db)
+        ensureV4Schema(db)
+        ensureV5Schema(db)
+        ensureV6Schema(db)
+        ensureV7Schema(db)
+    }
+
+    private fun ensureV8Schema(db: SQLiteDatabase) {
+        migrateLegacyAlternateTitles(db, repairInvalid = true)
+    }
+
+    private fun migrateLegacyAlternateTitles(db: SQLiteDatabase, repairInvalid: Boolean = false) {
+        val repairs = mutableListOf<Pair<Long, String>>()
+        db.rawQuery("""
+            SELECT se.id, se.alternate_titles, COALESCE(e.subtitle, '') AS subtitle
+            FROM source_entries se JOIN entries e ON se.remote_id=CAST(e.code AS TEXT)
+            WHERE se.source_id='nhentai' AND (se.alternate_titles='[]' OR ?='1')
+        """.trimIndent(), arrayOf(if (repairInvalid) "1" else "0")).use { cursor ->
+            while (cursor.moveToNext()) {
+                legacyAlternateTitlesReplacement(cursor.getString(1).orEmpty(), cursor.getString(2).orEmpty())
+                    ?.let { repairs += cursor.getLong(0) to it }
+            }
+        }
+        repairs.forEach { (id, titles) ->
+            db.update("source_entries", ContentValues().apply { put("alternate_titles", titles) }, "id=?", arrayOf(id.toString()))
+        }
+    }
+
+    private fun ensureV7Schema(db: SQLiteDatabase) {
+        if (!hasColumn(db, "source_chapter_progress", "completed_at")) {
+            db.execSQL("ALTER TABLE source_chapter_progress ADD COLUMN completed_at TEXT NOT NULL DEFAULT ''")
+        }
+        db.execSQL(
+            """
+            UPDATE source_chapter_progress
+            SET completed_at=COALESCE(
+                NULLIF((
+                    SELECT MIN(COALESCE(NULLIF(rs.ended_at, ''), rs.started_at))
+                    FROM reading_sessions rs
+                    WHERE rs.profile_id=source_chapter_progress.profile_id
+                      AND rs.source_id=source_chapter_progress.source_id
+                      AND rs.remote_id=source_chapter_progress.remote_id
+                      AND rs.chapter_id=source_chapter_progress.chapter_id
+                ), ''),
+                NULLIF(updated_at, ''),
+                ''
+            )
+            WHERE completed=1 AND COALESCE(completed_at, '')=''
+            """.trimIndent()
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_source_chapter_completion ON source_chapter_progress(profile_id,source_id,completed_at)")
+    }
+
+    private fun ensureV6Schema(db: SQLiteDatabase) {
+        if (!hasColumn(db, "reading_sessions", "chapter_id")) {
+            db.execSQL("ALTER TABLE reading_sessions ADD COLUMN chapter_id TEXT NOT NULL DEFAULT ''")
+        }
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_reading_sessions_source_chapter ON reading_sessions(profile_id,source_id,remote_id,chapter_id)")
+    }
+
+    private fun ensureV5Schema(db: SQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS source_chapter_progress (
+                profile_id TEXT NOT NULL,
+                source_id TEXT NOT NULL,
+                remote_id TEXT NOT NULL,
+                chapter_id TEXT NOT NULL,
+                furthest_page_index INTEGER NOT NULL DEFAULT 0,
+                page_count INTEGER NOT NULL DEFAULT 0,
+                completed INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL DEFAULT '',
+                PRIMARY KEY(profile_id, source_id, remote_id, chapter_id),
+                FOREIGN KEY(profile_id) REFERENCES profiles(id) ON DELETE CASCADE,
+                FOREIGN KEY(source_id) REFERENCES sources(id) ON DELETE RESTRICT
+            )
+            """.trimIndent()
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_source_chapter_progress_entry ON source_chapter_progress(profile_id,source_id,remote_id)")
+    }
+
+    private fun ensureV4Schema(db: SQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS source_chapter_cache (
+                source_id TEXT NOT NULL,
+                remote_id TEXT NOT NULL,
+                chapter_count INTEGER NOT NULL DEFAULT 0,
+                payload_json TEXT NOT NULL DEFAULT '[]',
+                fetched_at_epoch_ms INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY(source_id, remote_id),
+                FOREIGN KEY(source_id) REFERENCES sources(id) ON DELETE CASCADE
+            )
+            """.trimIndent()
+        )
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS idx_source_chapter_cache_fetched ON source_chapter_cache(fetched_at_epoch_ms)"
+        )
+    }
+
+    private fun ensureV3Schema(db: SQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS source_reader_progress (
+                profile_id TEXT NOT NULL,
+                source_id TEXT NOT NULL,
+                remote_id TEXT NOT NULL,
+                chapter_id TEXT NOT NULL,
+                page_index INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL DEFAULT '',
+                PRIMARY KEY(profile_id, source_id, remote_id),
+                FOREIGN KEY(profile_id) REFERENCES profiles(id) ON DELETE CASCADE,
+                FOREIGN KEY(source_id) REFERENCES sources(id) ON DELETE RESTRICT
+            )
+            """.trimIndent()
+        )
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS idx_source_reader_progress_entry ON source_reader_progress(profile_id,source_id,remote_id)"
+        )
+    }
+
+    private fun ensureV2Schema(db: SQLiteDatabase) {
+        db.execSQL("""
+            CREATE TABLE IF NOT EXISTS sources (
+                id TEXT PRIMARY KEY,
+                display_name TEXT NOT NULL,
+                adapter_version INTEGER NOT NULL DEFAULT 1,
+                enabled INTEGER NOT NULL DEFAULT 1
+            )
+        """.trimIndent())
+        db.execSQL("""
+            CREATE TABLE IF NOT EXISTS profiles (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                kind TEXT NOT NULL DEFAULT 'COMBINED',
+                created_at TEXT NOT NULL DEFAULT '',
+                last_used_at TEXT NOT NULL DEFAULT '',
+                is_main INTEGER NOT NULL DEFAULT 0
+            )
+        """.trimIndent())
+        db.execSQL("""
+            CREATE TABLE IF NOT EXISTS profile_sources (
+                profile_id TEXT NOT NULL,
+                source_id TEXT NOT NULL,
+                PRIMARY KEY(profile_id, source_id),
+                FOREIGN KEY(profile_id) REFERENCES profiles(id) ON DELETE CASCADE,
+                FOREIGN KEY(source_id) REFERENCES sources(id) ON DELETE RESTRICT
+            )
+        """.trimIndent())
+        db.execSQL("""
+            CREATE TABLE IF NOT EXISTS source_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_id TEXT NOT NULL,
+                remote_id TEXT NOT NULL,
+                title TEXT NOT NULL DEFAULT '',
+                alternate_titles TEXT NOT NULL DEFAULT '[]',
+                canonical_url TEXT NOT NULL DEFAULT '',
+                thumbnail_url TEXT NOT NULL DEFAULT '',
+                unit_count INTEGER NOT NULL DEFAULT 0,
+                unit_label TEXT NOT NULL DEFAULT 'pages',
+                published_at TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT '',
+                fetched_at TEXT NOT NULL DEFAULT '',
+                provider_revision TEXT NOT NULL DEFAULT '',
+                source_payload TEXT NOT NULL DEFAULT '',
+                legacy_code INTEGER,
+                UNIQUE(source_id, remote_id),
+                FOREIGN KEY(source_id) REFERENCES sources(id) ON DELETE RESTRICT
+            )
+        """.trimIndent())
+        db.execSQL("""
+            CREATE TABLE IF NOT EXISTS source_entry_tags (
+                source_entry_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                type TEXT NOT NULL DEFAULT 'tag',
+                normalized_name TEXT NOT NULL,
+                remote_id TEXT NOT NULL DEFAULT '',
+                PRIMARY KEY(source_entry_id, type, normalized_name),
+                FOREIGN KEY(source_entry_id) REFERENCES source_entries(id) ON DELETE CASCADE
+            )
+        """.trimIndent())
+        db.execSQL("""
+            CREATE TABLE IF NOT EXISTS source_entry_creators (
+                source_entry_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                type TEXT NOT NULL,
+                normalized_name TEXT NOT NULL,
+                remote_id TEXT NOT NULL DEFAULT '',
+                source_url TEXT NOT NULL DEFAULT '',
+                PRIMARY KEY(source_entry_id, type, normalized_name),
+                FOREIGN KEY(source_entry_id) REFERENCES source_entries(id) ON DELETE CASCADE
+            )
+        """.trimIndent())
+        db.execSQL("""
+            CREATE TABLE IF NOT EXISTS source_terms (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                kind TEXT NOT NULL,
+                type TEXT NOT NULL,
+                normalized_name TEXT NOT NULL,
+                display_name TEXT NOT NULL,
+                UNIQUE(kind, type, normalized_name)
+            )
+        """.trimIndent())
+        db.execSQL("""
+            CREATE TABLE IF NOT EXISTS profile_entries (
+                profile_id TEXT NOT NULL,
+                source_entry_id INTEGER NOT NULL,
+                read_state INTEGER NOT NULL DEFAULT 0,
+                rating INTEGER NOT NULL DEFAULT 0,
+                pinned INTEGER NOT NULL DEFAULT 0,
+                pin_priority INTEGER NOT NULL DEFAULT 0,
+                read_at TEXT NOT NULL DEFAULT '',
+                added_at TEXT NOT NULL DEFAULT '',
+                fetched_at TEXT NOT NULL DEFAULT '',
+                PRIMARY KEY(profile_id, source_entry_id),
+                FOREIGN KEY(profile_id) REFERENCES profiles(id) ON DELETE CASCADE,
+                FOREIGN KEY(source_entry_id) REFERENCES source_entries(id) ON DELETE CASCADE
+            )
+        """.trimIndent())
+        db.execSQL("""
+            CREATE TABLE IF NOT EXISTS profile_entry_local_tags (
+                profile_id TEXT NOT NULL,
+                source_entry_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                normalized_name TEXT NOT NULL,
+                PRIMARY KEY(profile_id, source_entry_id, normalized_name),
+                FOREIGN KEY(profile_id) REFERENCES profiles(id) ON DELETE CASCADE,
+                FOREIGN KEY(source_entry_id) REFERENCES source_entries(id) ON DELETE CASCADE
+            )
+        """.trimIndent())
+        db.execSQL("""
+            CREATE TABLE IF NOT EXISTS profile_preferences (
+                profile_id TEXT NOT NULL,
+                preference_key TEXT NOT NULL,
+                value_json TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL DEFAULT '',
+                PRIMARY KEY(profile_id, preference_key),
+                FOREIGN KEY(profile_id) REFERENCES profiles(id) ON DELETE CASCADE
+            )
+        """.trimIndent())
+        db.execSQL("""
+            CREATE TABLE IF NOT EXISTS app_state (
+                slot_id INTEGER PRIMARY KEY CHECK(slot_id = 1),
+                active_profile_id TEXT NOT NULL DEFAULT 'main'
+            )
+        """.trimIndent())
+        db.execSQL("INSERT OR IGNORE INTO sources(id,display_name,adapter_version,enabled) VALUES('nhentai','NHentai',1,1)")
+        db.execSQL("INSERT OR IGNORE INTO sources(id,display_name,adapter_version,enabled) VALUES('mangadex','MangaDex',1,1)")
+        val migrationNow = utcNowString()
+        // Seed both providers only for a new platform (fresh install or 1.9 upgrade).
+        // Keep the old internal 'main' key for NHentai's existing foreign keys;
+        // it is not a visible Main/combined profile in a new 2.0 installation.
+        db.execSQL("""
+            INSERT INTO profiles(id,name,kind,created_at,last_used_at,is_main)
+            SELECT 'main','NHentai','SOURCE_LOCKED',?,?,1
+            WHERE NOT EXISTS(SELECT 1 FROM profiles)
+            UNION ALL
+            SELECT 'mangadex-default','MangaDex','SOURCE_LOCKED',?,?,0
+            WHERE NOT EXISTS(SELECT 1 FROM profiles)
+        """.trimIndent(), arrayOf(migrationNow, migrationNow, migrationNow, migrationNow))
+        // Existing 2.0 development profiles and their state are left intact.
+        db.execSQL("INSERT OR IGNORE INTO profiles(id,name,kind,created_at,last_used_at,is_main) VALUES('main','NHentai','SOURCE_LOCKED',?,?,1)", arrayOf(migrationNow, migrationNow))
+        db.execSQL("INSERT OR IGNORE INTO profile_sources(profile_id,source_id) VALUES('main','nhentai')")
+        db.execSQL("""
+            INSERT OR IGNORE INTO profile_sources(profile_id,source_id)
+            SELECT id,'mangadex' FROM profiles
+            WHERE id='mangadex-default' AND NOT EXISTS(
+                SELECT 1 FROM profile_sources WHERE profile_id='mangadex-default'
+            )
+        """.trimIndent())
+        db.execSQL("INSERT OR IGNORE INTO app_state(slot_id,active_profile_id) VALUES(1,'main')")
+        if (!hasColumn(db, "source_entries", "provider_revision")) db.execSQL("ALTER TABLE source_entries ADD COLUMN provider_revision TEXT NOT NULL DEFAULT ''")
+        db.execSQL("""
+            INSERT OR IGNORE INTO source_entries(
+                source_id,remote_id,title,alternate_titles,canonical_url,thumbnail_url,unit_count,unit_label,
+                published_at,status,fetched_at,source_payload,legacy_code
+            )
+            SELECT 'nhentai', CAST(code AS TEXT), title, '[]',
+                   source_url,
+                   CASE WHEN COALESCE(media_id,0)>0 AND COALESCE(cover_ext,'')<>''
+                        THEN 'https://t.nhentai.net/galleries/' || media_id || '/cover.' || cover_ext ELSE '' END,
+                   num_pages,'pages',upload_date,'',fetched_at,'',code
+            FROM entries
+        """.trimIndent())
+        migrateLegacyAlternateTitles(db)
+        db.execSQL("""
+            UPDATE source_entries SET
+                title=(SELECT e.title FROM entries e WHERE CAST(e.code AS TEXT)=source_entries.remote_id),
+                canonical_url=(SELECT e.source_url FROM entries e WHERE CAST(e.code AS TEXT)=source_entries.remote_id),
+                unit_count=(SELECT e.num_pages FROM entries e WHERE CAST(e.code AS TEXT)=source_entries.remote_id),
+                published_at=(SELECT e.upload_date FROM entries e WHERE CAST(e.code AS TEXT)=source_entries.remote_id),
+                fetched_at=(SELECT e.fetched_at FROM entries e WHERE CAST(e.code AS TEXT)=source_entries.remote_id)
+            WHERE source_id='nhentai' AND EXISTS(SELECT 1 FROM entries e WHERE CAST(e.code AS TEXT)=source_entries.remote_id)
+        """.trimIndent())
+        db.execSQL("""
+            INSERT OR IGNORE INTO profile_entries(profile_id,source_entry_id,read_state,rating,pinned,pin_priority,read_at,added_at,fetched_at)
+            SELECT 'main',se.id,e.read_state,e.rating,e.pinned,0,e.read_at,e.added_at,e.fetched_at
+            FROM entries e JOIN source_entries se ON se.source_id='nhentai' AND se.remote_id=CAST(e.code AS TEXT)
+        """.trimIndent())
+        db.execSQL("""
+            UPDATE profile_entries SET
+                read_state=(SELECT e.read_state FROM entries e JOIN source_entries se ON se.source_id='nhentai' AND se.remote_id=CAST(e.code AS TEXT) WHERE se.id=profile_entries.source_entry_id),
+                rating=(SELECT e.rating FROM entries e JOIN source_entries se ON se.source_id='nhentai' AND se.remote_id=CAST(e.code AS TEXT) WHERE se.id=profile_entries.source_entry_id),
+                pinned=(SELECT e.pinned FROM entries e JOIN source_entries se ON se.source_id='nhentai' AND se.remote_id=CAST(e.code AS TEXT) WHERE se.id=profile_entries.source_entry_id),
+                read_at=(SELECT e.read_at FROM entries e JOIN source_entries se ON se.source_id='nhentai' AND se.remote_id=CAST(e.code AS TEXT) WHERE se.id=profile_entries.source_entry_id)
+            WHERE profile_id='main' AND EXISTS(SELECT 1 FROM source_entries se WHERE se.id=profile_entries.source_entry_id AND se.source_id='nhentai')
+        """.trimIndent())
+        db.execSQL("""
+            INSERT OR IGNORE INTO source_entry_tags(source_entry_id,name,type,normalized_name,remote_id)
+            SELECT se.id,t.name,t.type,t.normalized_name,''
+            FROM entry_tags et JOIN tags t ON t.id=et.tag_id
+            JOIN source_entries se ON se.source_id='nhentai' AND se.remote_id=CAST(et.entry_code AS TEXT)
+        """.trimIndent())
+        db.execSQL("""
+            INSERT OR IGNORE INTO source_entry_creators(source_entry_id,name,type,normalized_name,remote_id,source_url)
+            SELECT se.id,t.name,t.type,t.normalized_name,'',t.source_url
+            FROM entry_tags et JOIN tags t ON t.id=et.tag_id AND t.type IN ('artist','group')
+            JOIN source_entries se ON se.source_id='nhentai' AND se.remote_id=CAST(et.entry_code AS TEXT)
+        """.trimIndent())
+        if (!hasColumn(db, "reading_sessions", "profile_id")) db.execSQL("ALTER TABLE reading_sessions ADD COLUMN profile_id TEXT NOT NULL DEFAULT 'main'")
+        if (!hasColumn(db, "reading_sessions", "source_id")) db.execSQL("ALTER TABLE reading_sessions ADD COLUMN source_id TEXT NOT NULL DEFAULT 'nhentai'")
+        if (!hasColumn(db, "reading_sessions", "remote_id")) db.execSQL("ALTER TABLE reading_sessions ADD COLUMN remote_id TEXT NOT NULL DEFAULT ''")
+        if (!hasColumn(db, "reading_sessions", "session_key")) db.execSQL("ALTER TABLE reading_sessions ADD COLUMN session_key TEXT NOT NULL DEFAULT ''")
+        db.execSQL("UPDATE reading_sessions SET remote_id=CAST(entry_code AS TEXT) WHERE COALESCE(remote_id,'')='' AND entry_code>0")
+        db.execSQL("UPDATE reading_sessions SET session_key='legacy:' || id WHERE COALESCE(session_key,'')=''")
+        if (!hasColumn(db, "subscriptions", "profile_id")) db.execSQL("ALTER TABLE subscriptions ADD COLUMN profile_id TEXT NOT NULL DEFAULT 'main'")
+        if (!hasColumn(db, "subscriptions", "source_id")) db.execSQL("ALTER TABLE subscriptions ADD COLUMN source_id TEXT NOT NULL DEFAULT 'nhentai'")
+        db.execSQL("UPDATE subscriptions SET route_key=profile_id || '|' || source_id || '|' || route_key WHERE route_key NOT LIKE profile_id || '|' || source_id || '|%'")
+        if (!hasColumn(db, "subscription_events", "source_id")) db.execSQL("ALTER TABLE subscription_events ADD COLUMN source_id TEXT NOT NULL DEFAULT 'nhentai'")
+        if (!hasColumn(db, "subscription_events", "remote_id")) db.execSQL("ALTER TABLE subscription_events ADD COLUMN remote_id TEXT NOT NULL DEFAULT ''")
+        db.execSQL("UPDATE subscription_events SET remote_id=CAST(code AS TEXT) WHERE COALESCE(remote_id,'')='' AND code>0")
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_source_entries_key ON source_entries(source_id,remote_id)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_profile_entries_profile_state ON profile_entries(profile_id,read_state,pinned,rating)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_source_entry_tags_lookup ON source_entry_tags(type,normalized_name,source_entry_id)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_source_terms_lookup ON source_terms(kind,type,normalized_name)")
+        db.execSQL("INSERT OR IGNORE INTO source_terms(kind,type,normalized_name,display_name) SELECT 'tag',type,normalized_name,name FROM source_entry_tags WHERE normalized_name<>''")
+        db.execSQL("INSERT OR IGNORE INTO source_terms(kind,type,normalized_name,display_name) SELECT 'creator','creator',normalized_name,name FROM source_entry_creators WHERE normalized_name<>''")
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_reading_sessions_profile_source ON reading_sessions(profile_id,source_id,remote_id)")
+        db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS idx_reading_sessions_profile_key ON reading_sessions(profile_id,session_key) WHERE session_key<>''")
     }
 
     private fun backfillDailyReadActivityIfNeeded(db: SQLiteDatabase) {
@@ -549,10 +1104,11 @@ class SauceTrackerDatabase(
         }
     }
 
-    fun upsertGallery(gallery: GalleryData): Boolean {
+    fun upsertGallery(gallery: GalleryData, profileId: String = ProfileStore(this).activeProfileId()): Boolean {
         val db = writableDatabase
         val now = utcNowString()
-        var insertedNew = false
+        val key = SourceEntryKey(SourceId("nhentai"), gallery.code.toString())
+        val insertedIntoProfile = ProfileStore(this).state(profileId, key) == null
 
         db.beginTransaction()
         try {
@@ -570,7 +1126,6 @@ class SauceTrackerDatabase(
                 }
                 db.update("entries", values, "code = ?", arrayOf(gallery.code.toString()))
             } else {
-                insertedNew = true
                 val values = ContentValues().apply {
                     put("code", gallery.code)
                     put("title", gallery.title)
@@ -627,20 +1182,29 @@ class SauceTrackerDatabase(
         } finally {
             db.endTransaction()
         }
-        return insertedNew
+        SourceEntryStore(this).upsert(
+            entry = SourceEntry(
+                key = key,
+                title = gallery.title,
+                alternateTitles = listOf(gallery.subtitle).filter(String::isNotBlank),
+                canonicalUrl = gallery.sourceUrl,
+                thumbnailUrl = gallery.mediaId.takeIf { it > 0L }?.let {
+                    "https://t.nhentai.net/galleries/$it/cover.${parseCoverExtension(gallery.coverExt)}"
+                }.orEmpty(),
+                unitCount = gallery.numPages,
+                unitLabel = "pages",
+                publishedAt = gallery.uploadDate,
+                tags = gallery.tags.map { SourceTag(it.name, it.type) }
+            ),
+            profileId = profileId
+        )
+        return insertedIntoProfile
     }
 
-    fun deleteEntry(code: Int) {
-        val db = writableDatabase
-        db.beginTransaction()
-        try {
-            db.delete("entries", "code = ?", arrayOf(code.toString()))
-            cleanupOrphanTags(db)
-            db.delete("entry_heatmap_cache", null, null)
-            db.setTransactionSuccessful()
-        } finally {
-            db.endTransaction()
-        }
+    fun deleteEntry(code: Int, profileId: String = ProfileStore(this).activeProfileId()) {
+        if (code <= 0) return
+        SourceEntryStore(this).removeMembership(profileId, SourceEntryKey(SourceId("nhentai"), code.toString()))
+        writableDatabase.delete("entry_heatmap_cache", null, null)
     }
 
     fun clearAllEntries(): ClearAllResult {
@@ -729,7 +1293,9 @@ class SauceTrackerDatabase(
 
     fun getReadAnalyticsSnapshot(
         tagLimit: Int = 5,
-        creatorLimit: Int = 5
+        creatorLimit: Int = 5,
+        profileId: String = ProfileStore(this).activeProfileId(),
+        sourceScope: Set<String> = emptySet()
     ): ReadAnalyticsSnapshot {
         backfillDailyReadActivityIfNeeded(writableDatabase)
         val safeTagLimit = tagLimit.coerceIn(1, 20)
@@ -744,15 +1310,15 @@ class SauceTrackerDatabase(
         val readBreakdowns = linkedMapOf<StatsRange, ReadCountBreakdown>()
 
         StatsRange.entries.forEach { range ->
-            val breakdown = queryReadCountBreakdown(range)
+            val breakdown = queryReadCountBreakdown(range, profileId, sourceScope)
             readBreakdowns[range] = breakdown
             readCounts[range] = breakdown.total
-            pagesRead[range] = queryPagesRead(range)
-            averageRatings[range] = queryAverageReadRating(range)
-            topTags[range] = queryTopReadTags(range, safeTagLimit)
-            topCreators[range] = queryTopReadCreators(range, safeCreatorLimit)
-            dailyActivity[range] = queryDailyReadActivity(range)
-            readingSpeed[range] = queryReadingSpeedStats(range)
+            pagesRead[range] = queryPagesRead(range, profileId, sourceScope)
+            averageRatings[range] = queryAverageReadRating(range, profileId, sourceScope)
+            topTags[range] = queryTopReadTags(range, safeTagLimit, profileId, sourceScope)
+            topCreators[range] = queryTopReadCreators(range, safeCreatorLimit, profileId, sourceScope)
+            dailyActivity[range] = queryDailyReadActivity(range, profileId, sourceScope)
+            readingSpeed[range] = queryReadingSpeedStats(range, profileId, sourceScope)
         }
 
         return ReadAnalyticsSnapshot(
@@ -785,20 +1351,43 @@ class SauceTrackerDatabase(
         return " AND $dateExpr BETWEEN ? AND ?" to listOf(bounds.first, bounds.second)
     }
 
-    private fun queryReadCountBreakdown(range: StatsRange): ReadCountBreakdown {
-        val (entryRangeSql, entryRangeArgs) = readRangeClause(range, alias = "e")
+    private fun profileReadRangeClause(range: StatsRange, alias: String = "pe"): Pair<String, List<String>> {
+        val bounds = readDateRange(range) ?: return "" to emptyList()
+        val dateExpr = localCalendarDateSql("COALESCE(NULLIF($alias.read_at, ''), $alias.added_at)")
+        return " AND $dateExpr BETWEEN ? AND ?" to listOf(bounds.first, bounds.second)
+    }
+
+    private fun sourceScopeClause(column: String, sourceScope: Set<String>): Pair<String, List<String>> {
+        val sources = sourceScope.map(String::trim).filter(String::isNotBlank).distinct().sorted()
+        if (sources.isEmpty()) return "" to emptyList()
+        return " AND $column IN (${sources.joinToString(",") { "?" }})" to sources
+    }
+
+    private fun queryReadCountBreakdown(range: StatsRange, profileId: String, sourceScope: Set<String>): ReadCountBreakdown {
+        val (entryRangeSql, entryRangeArgs) = profileReadRangeClause(range)
         val (sessionRangeSql, sessionRangeArgs) = readRangeClauseForUtcTimestamp(range, "s.started_at")
+        val (entryScopeSql, entryScopeArgs) = sourceScopeClause("se.source_id", sourceScope)
+        val (sessionScopeSql, sessionScopeArgs) = sourceScopeClause("s.source_id", sourceScope)
+        val (completionScopeSql, completionScopeArgs) = sourceScopeClause("cp.source_id", sourceScope)
+        val (completionRangeSql, completionRangeArgs) = readRangeClauseForUtcTimestamp(range, "cp.completed_at")
         val sql = """
             SELECT
-                (SELECT COUNT(*) FROM entries e
-                 WHERE COALESCE(e.read_state, 0) = 1$entryRangeSql) AS unique_entries,
+                (SELECT COUNT(*) FROM profile_entries pe JOIN source_entries se ON se.id=pe.source_entry_id
+                 WHERE pe.profile_id=? AND se.source_id='nhentai' AND COALESCE(pe.read_state, 0) = 1$entryScopeSql$entryRangeSql) AS unique_entries,
+                (SELECT COUNT(*) FROM source_chapter_progress cp
+                 WHERE cp.profile_id=? AND COALESCE(cp.completed_at, '')<>''
+                   $completionScopeSql$completionRangeSql) AS chapters_read,
                 (SELECT COUNT(*) FROM reading_sessions s
-                 WHERE COALESCE(s.is_reread, 0) = 1$sessionRangeSql) AS rereads
+                 WHERE s.profile_id=? AND s.source_id='nhentai' AND COALESCE(s.is_reread, 0) = 1$sessionScopeSql$sessionRangeSql) AS rereads
         """.trimIndent()
-        readableDatabase.rawQuery(sql, (entryRangeArgs + sessionRangeArgs).toTypedArray()).use { cursor ->
+        val args = listOf(profileId) + entryScopeArgs + entryRangeArgs +
+            profileId + completionScopeArgs + completionRangeArgs +
+            profileId + sessionScopeArgs + sessionRangeArgs
+        readableDatabase.rawQuery(sql, args.toTypedArray()).use { cursor ->
             if (cursor.moveToFirst()) {
                 return ReadCountBreakdown(
                     uniqueEntries = cursor.getInt(cursor.getColumnIndexOrThrow("unique_entries")).coerceAtLeast(0),
+                    chaptersRead = cursor.getInt(cursor.getColumnIndexOrThrow("chapters_read")).coerceAtLeast(0),
                     rereads = cursor.getInt(cursor.getColumnIndexOrThrow("rereads")).coerceAtLeast(0)
                 )
             }
@@ -806,22 +1395,41 @@ class SauceTrackerDatabase(
         return ReadCountBreakdown()
     }
 
-    private fun queryPagesRead(range: StatsRange): Int {
-        val (entryRangeSql, entryRangeArgs) = readRangeClause(range, alias = "e")
+    fun readingSessionEntryKeys(profileId: String, sourceScope: Set<String> = emptySet()): Set<String> {
+        val (scopeSql, scopeArgs) = sourceScopeClause("source_id", sourceScope)
+        val keys = linkedSetOf<String>()
+        readableDatabase.rawQuery(
+            "SELECT DISTINCT source_id, remote_id FROM reading_sessions WHERE profile_id=? AND remote_id<>''$scopeSql",
+            (listOf(profileId) + scopeArgs).toTypedArray()
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                val sourceId = cursor.getString(0)?.trim().orEmpty()
+                val remoteId = cursor.getString(1)?.trim().orEmpty()
+                if (sourceId.isNotBlank() && remoteId.isNotBlank()) keys += "$sourceId:$remoteId"
+            }
+        }
+        return keys
+    }
+
+    private fun queryPagesRead(range: StatsRange, profileId: String, sourceScope: Set<String>): Int {
+        val (entryRangeSql, entryRangeArgs) = profileReadRangeClause(range)
         val (sessionRangeSql, sessionRangeArgs) = readRangeClauseForUtcTimestamp(range, "s.started_at")
+        val (sessionScopeSql, sessionScopeArgs) = sourceScopeClause("s.source_id", sourceScope)
+        val includeNhentaiEntriesSql = if (sourceScope.isEmpty() || "nhentai" in sourceScope) "" else " AND 0"
         val sql = """
             SELECT COALESCE(SUM(pages_read), 0)
             FROM (
-                SELECT CASE WHEN e.num_pages > 0 THEN e.num_pages ELSE 0 END AS pages_read
-                FROM entries e
-                WHERE COALESCE(e.read_state, 0) = 1$entryRangeSql
+                SELECT CASE WHEN se.unit_count > 0 THEN se.unit_count ELSE 0 END AS pages_read
+                FROM profile_entries pe JOIN source_entries se ON se.id=pe.source_entry_id
+                WHERE pe.profile_id=? AND se.source_id='nhentai' AND COALESCE(pe.read_state, 0) = 1$includeNhentaiEntriesSql$entryRangeSql
                 UNION ALL
                 SELECT CASE WHEN s.pages_viewed > 0 THEN s.pages_viewed ELSE 0 END AS pages_read
                 FROM reading_sessions s
-                WHERE COALESCE(s.is_reread, 0) = 1$sessionRangeSql
+                WHERE s.profile_id=?
+                  AND (s.source_id<>'nhentai' OR COALESCE(s.is_reread, 0) = 1)$sessionScopeSql$sessionRangeSql
             ) reads
         """.trimIndent()
-        readableDatabase.rawQuery(sql, (entryRangeArgs + sessionRangeArgs).toTypedArray()).use { cursor ->
+        readableDatabase.rawQuery(sql, (listOf(profileId) + entryRangeArgs + profileId + sessionScopeArgs + sessionRangeArgs).toTypedArray()).use { cursor ->
             if (cursor.moveToFirst()) {
                 return cursor.getInt(0).coerceAtLeast(0)
             }
@@ -829,14 +1437,16 @@ class SauceTrackerDatabase(
         return 0
     }
 
-    private fun queryAverageReadRating(range: StatsRange): Float {
-        val (rangeSql, rangeArgs) = readRangeClause(range, alias = "e")
+    private fun queryAverageReadRating(range: StatsRange, profileId: String, sourceScope: Set<String>): Float {
+        val (rangeSql, rangeArgs) = profileReadRangeClause(range)
+        val (scopeSql, scopeArgs) = sourceScopeClause("se.source_id", sourceScope)
         val sql = """
-            SELECT AVG(CASE WHEN e.rating > 0 THEN CAST(e.rating AS REAL) END)
-            FROM entries e
-            WHERE COALESCE(e.read_state, 0) = 1$rangeSql
+            SELECT AVG(CASE WHEN pe.rating > 0 THEN CAST(pe.rating AS REAL) END)
+            FROM profile_entries pe
+            JOIN source_entries se ON se.id=pe.source_entry_id
+            WHERE pe.profile_id=? AND COALESCE(pe.read_state, 0) = 1$scopeSql$rangeSql
         """.trimIndent()
-        readableDatabase.rawQuery(sql, rangeArgs.toTypedArray()).use { cursor ->
+        readableDatabase.rawQuery(sql, (listOf(profileId) + scopeArgs + rangeArgs).toTypedArray()).use { cursor ->
             if (cursor.moveToFirst() && !cursor.isNull(0)) {
                 return cursor.getDouble(0).toFloat().coerceIn(0f, 5f)
             }
@@ -844,21 +1454,22 @@ class SauceTrackerDatabase(
         return 0f
     }
 
-    private fun queryTopReadTags(range: StatsRange, limit: Int): List<AnalyticsCountRow> {
+    private fun queryTopReadTags(range: StatsRange, limit: Int, profileId: String, sourceScope: Set<String>): List<AnalyticsCountRow> {
         val safeLimit = limit.coerceIn(1, 50)
-        val (rangeSql, rangeArgs) = readRangeClause(range, alias = "e")
+        val (rangeSql, rangeArgs) = profileReadRangeClause(range)
+        val (scopeSql, scopeArgs) = sourceScopeClause("se.source_id", sourceScope)
         val sql = """
             SELECT t.name, t.type, COUNT(*) AS entry_count
-            FROM entries e
-            JOIN entry_tags et ON et.entry_code = e.code
-            JOIN tags t ON t.id = et.tag_id
-            WHERE COALESCE(e.read_state, 0) = 1
-              AND t.type NOT IN ('artist', 'group')$rangeSql
-            GROUP BY t.id, t.name, t.type
+            FROM profile_entries pe
+            JOIN source_entries se ON se.id=pe.source_entry_id
+            JOIN source_entry_tags t ON t.source_entry_id = pe.source_entry_id
+            WHERE pe.profile_id=? AND COALESCE(pe.read_state, 0) = 1
+              AND t.type NOT IN ('artist', 'author', 'group')$scopeSql$rangeSql
+            GROUP BY t.name, t.type
             ORDER BY entry_count DESC, LOWER(t.name) ASC
             LIMIT ?
         """.trimIndent()
-        val args = rangeArgs.toMutableList().apply { add(safeLimit.toString()) }
+        val args = (listOf(profileId) + scopeArgs + rangeArgs).toMutableList().apply { add(safeLimit.toString()) }
         val rows = mutableListOf<AnalyticsCountRow>()
         readableDatabase.rawQuery(sql, args.toTypedArray()).use { cursor ->
             val idxName = cursor.getColumnIndexOrThrow("name")
@@ -875,21 +1486,21 @@ class SauceTrackerDatabase(
         return rows
     }
 
-    private fun queryTopReadCreators(range: StatsRange, limit: Int): List<AnalyticsCountRow> {
+    private fun queryTopReadCreators(range: StatsRange, limit: Int, profileId: String, sourceScope: Set<String>): List<AnalyticsCountRow> {
         val safeLimit = limit.coerceIn(1, 50)
-        val (rangeSql, rangeArgs) = readRangeClause(range, alias = "e")
+        val (rangeSql, rangeArgs) = profileReadRangeClause(range)
+        val (scopeSql, scopeArgs) = sourceScopeClause("se.source_id", sourceScope)
         val sql = """
-            SELECT t.name, t.type, COUNT(*) AS entry_count
-            FROM entries e
-            JOIN entry_tags et ON et.entry_code = e.code
-            JOIN tags t ON t.id = et.tag_id
-            WHERE COALESCE(e.read_state, 0) = 1
-              AND t.type IN ('artist', 'group')$rangeSql
-            GROUP BY t.id, t.name, t.type
-            ORDER BY entry_count DESC, LOWER(t.name) ASC
+            SELECT c.name, c.type, COUNT(*) AS entry_count
+            FROM profile_entries pe
+            JOIN source_entries se ON se.id=pe.source_entry_id
+            JOIN source_entry_creators c ON c.source_entry_id = pe.source_entry_id
+            WHERE pe.profile_id=? AND COALESCE(pe.read_state, 0) = 1$scopeSql$rangeSql
+            GROUP BY c.name, c.type
+            ORDER BY entry_count DESC, LOWER(c.name) ASC
             LIMIT ?
         """.trimIndent()
-        val args = rangeArgs.toMutableList().apply { add(safeLimit.toString()) }
+        val args = (listOf(profileId) + scopeArgs + rangeArgs).toMutableList().apply { add(safeLimit.toString()) }
         val rows = mutableListOf<AnalyticsCountRow>()
         readableDatabase.rawQuery(sql, args.toTypedArray()).use { cursor ->
             val idxName = cursor.getColumnIndexOrThrow("name")
@@ -906,23 +1517,20 @@ class SauceTrackerDatabase(
         return rows
     }
 
-    fun listTrendTargets(kind: TrendTargetKind, includeMisc: Boolean): List<TrendTarget> {
-        val typeClause = trendTargetClause(kind, includeMisc)
-        val targetIdExpression = trendTargetIdExpression(kind)
-        val targetNameExpression = if (kind == TrendTargetKind.CREATORS) "MIN(t.name)" else "t.name"
-        val targetTypeExpression = if (kind == TrendTargetKind.CREATORS) "'creator'" else "t.type"
-        val targetGroupExpression = trendTargetGroupExpression(kind)
+    fun listTrendTargets(kind: TrendTargetKind, includeMisc: Boolean, profileId: String = ProfileStore(this).activeProfileId(), sourceScope: Set<String> = emptySet()): List<TrendTarget> {
+        val (scopeSql, scopeArgs) = sourceScopeClause("se.source_id", sourceScope)
+        val targetLinks = sourceTrendTargetLinksSql(kind, includeMisc)
         val sql = """
-            SELECT $targetIdExpression AS id, $targetNameExpression AS name,
-                   $targetTypeExpression AS type, COUNT(DISTINCT et.entry_code) AS entry_count
-            FROM tags t
-            JOIN entry_tags et ON et.tag_id = t.id
-            WHERE $typeClause
-            GROUP BY $targetGroupExpression
+            WITH target_links AS ($targetLinks)
+            SELECT tl.target_id AS id, MIN(tl.name) AS name, MIN(tl.type) AS type, COUNT(DISTINCT tl.source_entry_id) AS entry_count
+            FROM target_links tl JOIN source_entries se ON se.id=tl.source_entry_id
+            JOIN profile_entries pe ON pe.source_entry_id=se.id AND pe.profile_id=?
+            WHERE 1=1$scopeSql
+            GROUP BY tl.target_id
             ORDER BY entry_count DESC, LOWER(name) ASC
         """.trimIndent()
         val rows = mutableListOf<TrendTarget>()
-        readableDatabase.rawQuery(sql, null).use { cursor ->
+        readableDatabase.rawQuery(sql, (listOf(profileId) + scopeArgs).toTypedArray()).use { cursor ->
             val idIndex = cursor.getColumnIndexOrThrow("id")
             val nameIndex = cursor.getColumnIndexOrThrow("name")
             val typeIndex = cursor.getColumnIndexOrThrow("type")
@@ -939,9 +1547,23 @@ class SauceTrackerDatabase(
         return rows
     }
 
-    fun getTrendSnapshot(request: TrendRequest): TrendSnapshot {
+    private fun sourceTrendTargetLinksSql(kind: TrendTargetKind, includeMisc: Boolean): String = when (kind) {
+        TrendTargetKind.TAGS -> """
+            SELECT et.source_entry_id,st.id AS target_id,st.display_name AS name,et.type AS type
+            FROM source_entry_tags et JOIN source_terms st
+              ON st.kind='tag' AND st.type=et.type AND st.normalized_name=et.normalized_name
+            WHERE ${if (includeMisc) "et.type NOT IN ('artist','group')" else "et.type='tag'"}
+        """.trimIndent()
+        TrendTargetKind.CREATORS -> """
+            SELECT ec.source_entry_id,st.id AS target_id,st.display_name AS name,'creator' AS type
+            FROM source_entry_creators ec JOIN source_terms st
+              ON st.kind='creator' AND st.type='creator' AND st.normalized_name=ec.normalized_name
+        """.trimIndent()
+    }
+
+    fun getTrendSnapshot(request: TrendRequest, profileId: String = ProfileStore(this).activeProfileId(), sourceScope: Set<String> = emptySet()): TrendSnapshot {
         val targetIds = request.targetIds.asSequence().filter { it > 0L }.distinct().take(5).toList()
-        val granularity = trendGranularity(request.range, request.bucketMode)
+        val granularity = trendGranularity(request.range, request.bucketMode, profileId, sourceScope)
         if (!request.viewAll && targetIds.isEmpty()) {
             return TrendSnapshot(
                 range = request.range,
@@ -951,24 +1573,40 @@ class SauceTrackerDatabase(
             )
         }
 
+        val targetLinks = sourceTrendTargetLinksSql(request.targetKind, request.includeMisc)
+        val (entryScopeSql, entryScopeArgs) = sourceScopeClause("se.source_id", sourceScope)
+        val (sessionScopeSql, sessionScopeArgs) = sourceScopeClause("se.source_id", sourceScope)
+        val (completionScopeSql, completionScopeArgs) = sourceScopeClause("se.source_id", sourceScope)
         val readEventsCte = """
-            WITH read_events AS (
-                SELECT 'entry:' || e.code AS event_id,
-                       e.code AS entry_code,
-                       COALESCE(NULLIF(e.read_at, ''), e.added_at) AS read_timestamp,
-                       COALESCE(e.rating, 0) AS rating
-                FROM entries e
-                WHERE COALESCE(e.read_state, 0) = 1
+            WITH target_links AS ($targetLinks), read_events AS (
+                SELECT 'entry:' || se.source_id || ':' || se.remote_id AS event_id,
+                       se.id AS source_entry_id,
+                       COALESCE(NULLIF(pe.read_at, ''), pe.added_at) AS read_timestamp,
+                       COALESCE(pe.rating, 0) AS rating
+                FROM profile_entries pe
+                JOIN source_entries se ON se.id=pe.source_entry_id
+                WHERE pe.profile_id=? AND se.source_id='nhentai' AND COALESCE(pe.read_state, 0) = 1$entryScopeSql
 
                 UNION ALL
 
                 SELECT 'reread:' || s.id AS event_id,
-                       s.entry_code AS entry_code,
+                       se.id AS source_entry_id,
                        s.started_at AS read_timestamp,
                        COALESCE(s.rating, 0) AS rating
                 FROM reading_sessions s
-                JOIN entries e ON e.code = s.entry_code
-                WHERE COALESCE(s.is_reread, 0) = 1
+                JOIN source_entries se ON se.source_id=s.source_id AND se.remote_id=s.remote_id
+                WHERE s.profile_id=? AND s.source_id='nhentai'
+                  AND COALESCE(s.is_reread, 0) = 1$sessionScopeSql
+
+                UNION ALL
+
+                SELECT 'chapter:' || cp.source_id || ':' || cp.remote_id || ':' || cp.chapter_id AS event_id,
+                       se.id AS source_entry_id,
+                       cp.completed_at AS read_timestamp,
+                       0 AS rating
+                FROM source_chapter_progress cp
+                JOIN source_entries se ON se.source_id=cp.source_id AND se.remote_id=cp.remote_id
+                WHERE cp.profile_id=? AND COALESCE(cp.completed_at, '')<>''$completionScopeSql
             )
         """.trimIndent()
         val timestampExpression = "re.read_timestamp"
@@ -983,12 +1621,10 @@ class SauceTrackerDatabase(
         val rangeSql = if (rangeBounds == null) "" else " AND $dateExpression BETWEEN ? AND ?"
         val rangeArgs = rangeBounds?.let { listOf(it.first, it.second) }.orEmpty()
         val targetPlaceholders = targetIds.joinToString(",") { "?" }
-        val targetIdExpression = trendTargetIdExpression(request.targetKind)
-        val targetGroupExpression = trendTargetGroupExpression(request.targetKind)
         val targetFilterSql = if (request.viewAll) {
-            trendTargetClause(request.targetKind, request.includeMisc)
+            "1=1"
         } else {
-            "$targetIdExpression IN ($targetPlaceholders)"
+            "tl.target_id IN ($targetPlaceholders)"
         }
         val targetFilterArgs = if (request.viewAll) emptyList() else targetIds.map(Long::toString)
 
@@ -1001,7 +1637,10 @@ class SauceTrackerDatabase(
             GROUP BY bucket_key
             ORDER BY bucket_key ASC
         """.trimIndent()
-        readableDatabase.rawQuery(totalsSql, rangeArgs.toTypedArray()).use { cursor ->
+        val readEventArgs = listOf(profileId) + entryScopeArgs +
+            profileId + sessionScopeArgs +
+            profileId + completionScopeArgs
+        readableDatabase.rawQuery(totalsSql, (readEventArgs + rangeArgs).toTypedArray()).use { cursor ->
             val bucketIndex = cursor.getColumnIndexOrThrow("bucket_key")
             val totalIndex = cursor.getColumnIndexOrThrow("total_reads")
             while (cursor.moveToNext()) {
@@ -1011,19 +1650,18 @@ class SauceTrackerDatabase(
         }
 
         val targetMetadataSql = """
-            SELECT $targetIdExpression AS id,
-                   ${if (request.targetKind == TrendTargetKind.CREATORS) "MIN(t.name)" else "t.name"} AS name,
-                   ${if (request.targetKind == TrendTargetKind.CREATORS) "'creator'" else "t.type"} AS type,
-                   COUNT(DISTINCT et.entry_code) AS entry_count
-            FROM tags t
-            JOIN entry_tags et ON et.tag_id = t.id
+            WITH target_links AS ($targetLinks)
+            SELECT tl.target_id AS id,MIN(tl.name) AS name,MIN(tl.type) AS type,COUNT(DISTINCT tl.source_entry_id) AS entry_count
+            FROM target_links tl JOIN source_entries se ON se.id=tl.source_entry_id
+            JOIN profile_entries pe ON pe.source_entry_id=se.id AND pe.profile_id=?
             WHERE $targetFilterSql
-            GROUP BY $targetGroupExpression
+              ${if (sourceScope.isEmpty()) "" else "AND se.source_id IN (${sourceScope.joinToString(",") { "?" }})"}
+            GROUP BY tl.target_id
             ORDER BY entry_count DESC, LOWER(name) ASC
         """.trimIndent()
         val targetOrder = mutableListOf<Long>()
         val targetsById = linkedMapOf<Long, TrendTarget>()
-        readableDatabase.rawQuery(targetMetadataSql, targetFilterArgs.toTypedArray()).use { cursor ->
+        readableDatabase.rawQuery(targetMetadataSql, (listOf(profileId) + targetFilterArgs + sourceScope.map { it }).toTypedArray()).use { cursor ->
             val idIndex = cursor.getColumnIndexOrThrow("id")
             val nameIndex = cursor.getColumnIndexOrThrow("name")
             val typeIndex = cursor.getColumnIndexOrThrow("type")
@@ -1046,7 +1684,7 @@ class SauceTrackerDatabase(
         val seriesSql = """
             $readEventsCte
             SELECT
-                $targetIdExpression AS target_id,
+                tl.target_id AS target_id,
                 $bucketExpression AS bucket_key,
                 COUNT(DISTINCT re.event_id) AS matching_reads,
                 COUNT(DISTINCT CASE WHEN re.rating >= 4 THEN re.event_id END) AS positive_ratings,
@@ -1059,13 +1697,12 @@ class SauceTrackerDatabase(
                 COUNT(DISTINCT CASE WHEN re.rating = 4 THEN re.event_id END) AS rating_4_count,
                 COUNT(DISTINCT CASE WHEN re.rating = 5 THEN re.event_id END) AS rating_5_count
             FROM read_events re
-            JOIN entry_tags et ON et.entry_code = re.entry_code
-            JOIN tags t ON t.id = et.tag_id
+            JOIN target_links tl ON tl.source_entry_id = re.source_entry_id
             WHERE $targetFilterSql$rangeSql
-            GROUP BY $targetGroupExpression, bucket_key
+            GROUP BY tl.target_id, bucket_key
             ORDER BY bucket_key ASC
         """.trimIndent()
-        val seriesArgs = targetFilterArgs + rangeArgs
+        val seriesArgs = readEventArgs + targetFilterArgs + rangeArgs
         readableDatabase.rawQuery(seriesSql, seriesArgs.toTypedArray()).use { cursor ->
             val targetIndex = cursor.getColumnIndexOrThrow("target_id")
             val bucketIndex = cursor.getColumnIndexOrThrow("bucket_key")
@@ -1102,7 +1739,7 @@ class SauceTrackerDatabase(
         }
 
         val buckets = continuousTrendBuckets(request.range, granularity, totalsByBucket.keys)
-        val earliestReadDate = if (request.range == StatsRange.ALL_TIME) earliestReadCalendarDate() else null
+        val earliestReadDate = if (request.range == StatsRange.ALL_TIME) earliestReadCalendarDate(profileId, sourceScope) else null
         val resolvedTargetOrder = if (request.viewAll) {
             targetOrder.filter { pointsByTarget.containsKey(it) }
         } else {
@@ -1174,7 +1811,9 @@ class SauceTrackerDatabase(
 
     private fun trendGranularity(
         range: StatsRange,
-        mode: TrendBucketMode
+        mode: TrendBucketMode,
+        profileId: String,
+        sourceScope: Set<String>
     ): TrendBucketGranularity {
         if (mode == TrendBucketMode.LEGACY) {
             return when (range) {
@@ -1187,12 +1826,12 @@ class SauceTrackerDatabase(
             StatsRange.WEEK -> TrendBucketGranularity.DAY
             StatsRange.MONTH -> TrendBucketGranularity.WEEK
             StatsRange.YEAR -> TrendBucketGranularity.MONTH
-            StatsRange.ALL_TIME -> adaptiveAllTimeGranularity()
+            StatsRange.ALL_TIME -> adaptiveAllTimeGranularity(profileId, sourceScope)
         }
     }
 
-    private fun adaptiveAllTimeGranularity(): TrendBucketGranularity {
-        val earliest = earliestReadCalendarDate() ?: return TrendBucketGranularity.MONTH
+    private fun adaptiveAllTimeGranularity(profileId: String, sourceScope: Set<String>): TrendBucketGranularity {
+        val earliest = earliestReadCalendarDate(profileId, sourceScope) ?: return TrendBucketGranularity.MONTH
         val months = ChronoUnit.MONTHS.between(
             YearMonth.from(earliest),
             YearMonth.from(UserCalendar.today())
@@ -1205,23 +1844,29 @@ class SauceTrackerDatabase(
         }
     }
 
-    private fun earliestReadCalendarDate(): LocalDate? {
-        val entryDateExpression = localCalendarDateSql("COALESCE(NULLIF(read_at, ''), added_at)")
-        val sessionDateExpression = localCalendarDateSql("started_at")
+    private fun earliestReadCalendarDate(
+        profileId: String = ProfileStore(this).activeProfileId(),
+        sourceScope: Set<String> = emptySet()
+    ): LocalDate? {
+        val entryDateExpression = localCalendarDateSql("COALESCE(NULLIF(pe.read_at, ''), pe.added_at)")
+        val sessionDateExpression = localCalendarDateSql("s.started_at")
+        val (entryScopeSql, entryScopeArgs) = sourceScopeClause("se.source_id", sourceScope)
+        val (sessionScopeSql, sessionScopeArgs) = sourceScopeClause("s.source_id", sourceScope)
         return readableDatabase.rawQuery(
             """
                 SELECT MIN(read_date)
                 FROM (
                     SELECT $entryDateExpression AS read_date
-                    FROM entries
-                    WHERE COALESCE(read_state, 0) = 1
+                    FROM profile_entries pe
+                    JOIN source_entries se ON se.id=pe.source_entry_id
+                    WHERE pe.profile_id=? AND COALESCE(pe.read_state, 0) = 1$entryScopeSql
                     UNION ALL
                     SELECT $sessionDateExpression AS read_date
-                    FROM reading_sessions
-                    WHERE COALESCE(is_reread, 0) = 1
+                    FROM reading_sessions s
+                    WHERE s.profile_id=? AND COALESCE(s.is_reread, 0) = 1$sessionScopeSql
                 )
             """.trimIndent(),
-            emptyArray()
+            (listOf(profileId) + entryScopeArgs + profileId + sessionScopeArgs).toTypedArray()
         ).use { cursor ->
             if (!cursor.moveToFirst()) return@use null
             cursor.getString(0)?.let { runCatching { LocalDate.parse(it) }.getOrNull() }
@@ -1346,24 +1991,31 @@ class SauceTrackerDatabase(
         )
     }
 
-    fun getTagGraphDataSnapshot(): TagGraphDataSnapshot {
+    fun getTagGraphDataSnapshot(
+        profileId: String = ProfileStore(this).activeProfileId(),
+        sourceScope: Set<String> = emptySet()
+    ): TagGraphDataSnapshot {
+        val sourceFilter = if (sourceScope.isEmpty()) "" else {
+            " AND se.source_id IN (${sourceScope.joinToString(",") { "?" }})"
+        }
+        val scopedArgs = listOf(profileId) + sourceScope
         val totalEntries = readableDatabase.rawQuery(
-            "SELECT COUNT(*) FROM entries",
-            null
-        ).use { cursor ->
-            if (cursor.moveToFirst()) cursor.getInt(0).coerceAtLeast(0) else 0
-        }
+            "SELECT COUNT(*) FROM profile_entries pe JOIN source_entries se ON se.id=pe.source_entry_id WHERE pe.profile_id=?$sourceFilter",
+            scopedArgs.toTypedArray()
+        ).use { cursor -> if (cursor.moveToFirst()) cursor.getInt(0).coerceAtLeast(0) else 0 }
         val totalRatedEntries = readableDatabase.rawQuery(
-            "SELECT COUNT(*) FROM entries WHERE rating > 0",
-            null
-        ).use { cursor ->
-            if (cursor.moveToFirst()) cursor.getInt(0).coerceAtLeast(0) else 0
-        }
-        val totalPopularTagUsage = readableDatabase.rawQuery(
-            "SELECT COALESCE(SUM(tag_count), 0) FROM popular_tags WHERE type = 'tag'",
-            null
-        ).use { cursor ->
-            if (cursor.moveToFirst()) cursor.getLong(0).coerceAtLeast(0L) else 0L
+            "SELECT COUNT(*) FROM profile_entries pe JOIN source_entries se ON se.id=pe.source_entry_id WHERE pe.profile_id=? AND pe.rating > 0$sourceFilter",
+            scopedArgs.toTypedArray()
+        ).use { cursor -> if (cursor.moveToFirst()) cursor.getInt(0).coerceAtLeast(0) else 0 }
+        val totalPopularTagUsage = if (sourceScope.isNotEmpty() && "nhentai" !in sourceScope) {
+            0L
+        } else {
+            readableDatabase.rawQuery(
+                "SELECT COALESCE(SUM(tag_count), 0) FROM popular_tags WHERE type = 'tag'",
+                null
+            ).use { cursor ->
+                if (cursor.moveToFirst()) cursor.getLong(0).coerceAtLeast(0L) else 0L
+            }
         }
 
         data class MutableSeed(
@@ -1378,6 +2030,8 @@ class SauceTrackerDatabase(
 
         data class MutableEntrySeed(
             val code: Int,
+            val sourceId: String,
+            val remoteId: String,
             val title: String,
             val thumbnailUrl: String,
             val rating: Int,
@@ -1390,32 +2044,32 @@ class SauceTrackerDatabase(
         val entrySeedsByCode = linkedMapOf<Int, MutableEntrySeed>()
         val statsSql = """
             SELECT
-                t.name AS name,
-                t.normalized_name AS normalized_name,
-                COUNT(DISTINCT et.entry_code) AS local_count,
+                MIN(setag.name) AS name,
+                setag.normalized_name AS normalized_name,
+                COUNT(DISTINCT setag.source_entry_id) AS local_count,
                 COALESCE(MAX(pt.tag_count), 0) AS popular_count,
                 COALESCE(SUM(
                     CASE
-                        WHEN e.rating = 5 THEN 3.0
-                        WHEN e.rating = 4 THEN 2.0
-                        WHEN e.rating = 3 THEN 1.0
-                        WHEN e.rating = 1 THEN -1.0
+                        WHEN pe.rating = 5 THEN 3.0
+                        WHEN pe.rating = 4 THEN 2.0
+                        WHEN pe.rating = 3 THEN 1.0
+                        WHEN pe.rating = 1 THEN -1.0
                         ELSE 0.0
                     END
                 ), 0.0) AS rated_signal_sum,
-                COALESCE(SUM(CASE WHEN e.rating > 0 THEN 1 ELSE 0 END), 0) AS rated_mention_count
-            FROM tags t
-            LEFT JOIN entry_tags et ON et.tag_id = t.id
-            LEFT JOIN entries e ON e.code = et.entry_code
+                COALESCE(SUM(CASE WHEN pe.rating > 0 THEN 1 ELSE 0 END), 0) AS rated_mention_count
+            FROM source_entry_tags setag
+            JOIN source_entries se ON se.id=setag.source_entry_id
+            JOIN profile_entries pe ON pe.source_entry_id=se.id AND pe.profile_id=?
             LEFT JOIN popular_tags pt
-                ON pt.normalized_name = t.normalized_name
+                ON se.source_id='nhentai' AND pt.normalized_name = setag.normalized_name
                AND pt.type = 'tag'
-            WHERE t.type = 'tag'
-            GROUP BY t.id, t.name, t.normalized_name
+            WHERE setag.type = 'tag'$sourceFilter
+            GROUP BY setag.normalized_name
             HAVING local_count > 0
-            ORDER BY local_count DESC, LOWER(t.name) ASC
+            ORDER BY local_count DESC, LOWER(setag.name) ASC
         """.trimIndent()
-        readableDatabase.rawQuery(statsSql, emptyArray()).use { cursor ->
+        readableDatabase.rawQuery(statsSql, scopedArgs.toTypedArray()).use { cursor ->
             val idxName = cursor.getColumnIndexOrThrow("name")
             val idxNormalized = cursor.getColumnIndexOrThrow("normalized_name")
             val idxLocal = cursor.getColumnIndexOrThrow("local_count")
@@ -1438,29 +2092,38 @@ class SauceTrackerDatabase(
 
         readableDatabase.rawQuery(
             """
-            SELECT code, title, COALESCE(media_id, 0) AS media_id, COALESCE(cover_ext, '') AS cover_ext, rating, read_state, COALESCE(pinned, 0) AS pinned
-            FROM entries
-            ORDER BY added_at DESC, code DESC
+            SELECT se.id, se.source_id, se.remote_id, se.title, se.thumbnail_url,
+                   pe.rating, pe.read_state, COALESCE(pe.pinned, 0) AS pinned
+            FROM profile_entries pe
+            JOIN source_entries se ON se.id=pe.source_entry_id
+            WHERE pe.profile_id=?$sourceFilter
+            ORDER BY pe.added_at DESC, se.id DESC
             """.trimIndent(),
-            emptyArray()
+            scopedArgs.toTypedArray()
         ).use { cursor ->
-            val idxCode = cursor.getColumnIndexOrThrow("code")
+            val idxId = cursor.getColumnIndexOrThrow("id")
+            val idxSourceId = cursor.getColumnIndexOrThrow("source_id")
+            val idxRemoteId = cursor.getColumnIndexOrThrow("remote_id")
             val idxTitle = cursor.getColumnIndexOrThrow("title")
-            val idxMediaId = cursor.getColumnIndexOrThrow("media_id")
-            val idxCoverExt = cursor.getColumnIndexOrThrow("cover_ext")
+            val idxThumbnail = cursor.getColumnIndexOrThrow("thumbnail_url")
             val idxRating = cursor.getColumnIndexOrThrow("rating")
             val idxRead = cursor.getColumnIndexOrThrow("read_state")
             val idxPinned = cursor.getColumnIndexOrThrow("pinned")
             while (cursor.moveToNext()) {
-                val code = cursor.getInt(idxCode).coerceAtLeast(0)
-                if (code <= 0) continue
-                val title = cursor.getString(idxTitle)?.trim().orEmpty().ifBlank { "Gallery $code" }
-                val mediaId = cursor.getLong(idxMediaId).coerceAtLeast(0L)
-                val coverExt = parseCoverExtension(cursor.getString(idxCoverExt).orEmpty())
+                val sourceEntryId = cursor.getLong(idxId)
+                val sourceId = cursor.getString(idxSourceId)?.trim().orEmpty()
+                val remoteId = cursor.getString(idxRemoteId)?.trim().orEmpty()
+                if (sourceEntryId <= 0L || sourceId.isBlank() || remoteId.isBlank()) continue
+                val nhentaiCode = if (sourceId == "nhentai") remoteId.toIntOrNull() else null
+                val code = nhentaiCode?.takeIf { it > 0 }
+                    ?: -sourceEntryId.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+                val title = cursor.getString(idxTitle)?.trim().orEmpty().ifBlank { "$sourceId:$remoteId" }
                 entrySeedsByCode[code] = MutableEntrySeed(
                     code = code,
+                    sourceId = sourceId,
+                    remoteId = remoteId,
                     title = title,
-                    thumbnailUrl = buildThumbnailUrl(mediaId, coverExt),
+                    thumbnailUrl = cursor.getString(idxThumbnail)?.trim().orEmpty(),
                     rating = cursor.getInt(idxRating).coerceIn(0, 5),
                     isRead = cursor.getInt(idxRead) != 0,
                     pinned = cursor.getInt(idxPinned) != 0
@@ -1469,18 +2132,29 @@ class SauceTrackerDatabase(
         }
 
         val linkSql = """
-            SELECT t.normalized_name, et.entry_code
-            FROM tags t
-            JOIN entry_tags et ON et.tag_id = t.id
-            WHERE t.type = 'tag'
+            SELECT setag.normalized_name, se.id, se.source_id, se.remote_id
+            FROM source_entry_tags setag
+            JOIN source_entries se ON se.id=setag.source_entry_id
+            JOIN profile_entries pe ON pe.source_entry_id=se.id AND pe.profile_id=?
+            WHERE setag.type = 'tag'$sourceFilter
         """.trimIndent()
-        readableDatabase.rawQuery(linkSql, emptyArray()).use { cursor ->
+        readableDatabase.rawQuery(linkSql, scopedArgs.toTypedArray()).use { cursor ->
             val idxNormalized = cursor.getColumnIndexOrThrow("normalized_name")
-            val idxEntryCode = cursor.getColumnIndexOrThrow("entry_code")
+            val idxId = cursor.getColumnIndexOrThrow("id")
+            val idxSourceId = cursor.getColumnIndexOrThrow("source_id")
+            val idxRemoteId = cursor.getColumnIndexOrThrow("remote_id")
             while (cursor.moveToNext()) {
                 val normalizedName = cursor.getString(idxNormalized)?.trim().orEmpty()
-                val entryCode = cursor.getInt(idxEntryCode)
-                if (normalizedName.isBlank() || entryCode <= 0) continue
+                val sourceEntryId = cursor.getLong(idxId)
+                val sourceId = cursor.getString(idxSourceId)?.trim().orEmpty()
+                val remoteId = cursor.getString(idxRemoteId)?.trim().orEmpty()
+                val entryCode = if (sourceId == "nhentai") {
+                    remoteId.toIntOrNull()?.takeIf { it > 0 }
+                        ?: -sourceEntryId.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+                } else {
+                    -sourceEntryId.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+                }
+                if (normalizedName.isBlank() || entryCode == 0) continue
                 seedsByName[normalizedName]?.entryCodes?.add(entryCode)
                 entrySeedsByCode[entryCode]?.tagNames?.add(normalizedName)
             }
@@ -1509,7 +2183,9 @@ class SauceTrackerDatabase(
                     rating = entry.rating,
                     isRead = entry.isRead,
                     pinned = entry.pinned,
-                    tagNames = entry.tagNames.distinct().sorted()
+                    tagNames = entry.tagNames.distinct().sorted(),
+                    sourceId = entry.sourceId,
+                    remoteId = entry.remoteId
                 )
             }
         )
@@ -1528,10 +2204,12 @@ class SauceTrackerDatabase(
         return " AND $dateExpr BETWEEN ? AND ?" to listOf(bounds.first, bounds.second)
     }
 
-    private fun queryDailyReadActivity(range: StatsRange): List<DailyActivityPoint> {
-        val (entryRangeSql, entryRangeArgs) = readRangeClause(range, alias = "e")
+    private fun queryDailyReadActivity(range: StatsRange, profileId: String, sourceScope: Set<String>): List<DailyActivityPoint> {
+        val (entryRangeSql, entryRangeArgs) = profileReadRangeClause(range)
         val (sessionRangeSql, sessionRangeArgs) = readRangeClauseForUtcTimestamp(range, "s.started_at")
-        val entryDateExpr = localCalendarDateSql("COALESCE(NULLIF(e.read_at, ''), e.added_at)")
+        val (entryScopeSql, entryScopeArgs) = sourceScopeClause("se.source_id", sourceScope)
+        val (sessionScopeSql, sessionScopeArgs) = sourceScopeClause("s.source_id", sourceScope)
+        val entryDateExpr = localCalendarDateSql("COALESCE(NULLIF(pe.read_at, ''), pe.added_at)")
         val sessionDateExpr = localCalendarDateSql("s.started_at")
         val sql = """
             SELECT activity_date,
@@ -1539,22 +2217,38 @@ class SauceTrackerDatabase(
                    COALESCE(SUM(entries_read), 0) AS entries_read
             FROM (
                 SELECT $entryDateExpr AS activity_date,
-                       CASE WHEN e.num_pages > 0 THEN e.num_pages ELSE 0 END AS pages_read,
+                       CASE WHEN se.source_id='nhentai' AND se.unit_count > 0 THEN se.unit_count ELSE 0 END AS pages_read,
                        1 AS entries_read
-                FROM entries e
-                WHERE COALESCE(e.read_state, 0) = 1$entryRangeSql
+                FROM profile_entries pe JOIN source_entries se ON se.id=pe.source_entry_id
+                WHERE pe.profile_id=? AND se.source_id='nhentai' AND COALESCE(pe.read_state, 0) = 1$entryScopeSql$entryRangeSql
                 UNION ALL
                 SELECT $sessionDateExpr AS activity_date,
                        CASE WHEN s.pages_viewed > 0 THEN s.pages_viewed ELSE 0 END AS pages_read,
-                       1 AS entries_read
+                       CASE WHEN s.source_id='nhentai' THEN 1 ELSE 0 END AS entries_read
                 FROM reading_sessions s
-                WHERE COALESCE(s.is_reread, 0) = 1$sessionRangeSql
+                WHERE s.profile_id=?
+                  AND (s.source_id<>'nhentai' OR COALESCE(s.is_reread, 0) = 1)$sessionScopeSql$sessionRangeSql
+                UNION ALL
+                SELECT ${localCalendarDateSql("cp.completed_at")} AS activity_date,
+                       0 AS pages_read,
+                       1 AS entries_read
+                FROM source_chapter_progress cp
+                WHERE cp.profile_id=? AND COALESCE(cp.completed_at, '')<>''
+                  ${sourceScopeClause("cp.source_id", sourceScope).first}
+                  ${readRangeClauseForUtcTimestamp(range, "cp.completed_at").first}
             ) activity
             GROUP BY activity_date
             ORDER BY activity_date ASC
         """.trimIndent()
         val rows = mutableListOf<DailyActivityPoint>()
-        readableDatabase.rawQuery(sql, (entryRangeArgs + sessionRangeArgs).toTypedArray()).use { cursor ->
+        val completionArgs = sourceScopeClause("cp.source_id", sourceScope).second +
+            readRangeClauseForUtcTimestamp(range, "cp.completed_at").second
+        readableDatabase.rawQuery(
+            sql,
+            (listOf(profileId) + entryScopeArgs + entryRangeArgs +
+                profileId + sessionScopeArgs + sessionRangeArgs +
+                profileId + completionArgs).toTypedArray()
+        ).use { cursor ->
             val idxDate = cursor.getColumnIndexOrThrow("activity_date")
             val idxPages = cursor.getColumnIndexOrThrow("pages_read")
             val idxEntries = cursor.getColumnIndexOrThrow("entries_read")
@@ -1571,85 +2265,109 @@ class SauceTrackerDatabase(
         return rows
     }
 
-    fun listReadEntriesForDay(day: LocalDate): List<DayReadEntryRow> {
+    fun listReadEntriesForDay(
+        day: LocalDate,
+        profileId: String = ProfileStore(this).activeProfileId(),
+        sourceScope: Set<String> = emptySet()
+    ): List<DayReadEntryRow> {
         val dayKey = day.format(UPLOAD_DATE_FORMAT)
         val rows = mutableListOf<DayReadEntryRow>()
-        val entryDateExpr = localCalendarDateSql("COALESCE(NULLIF(e.read_at, ''), e.added_at)")
+        val entryDateExpr = localCalendarDateSql("COALESCE(NULLIF(pe.read_at, ''), pe.added_at)")
         val sessionDateExpr = localCalendarDateSql("s.started_at")
+        val sourceFilter = if (sourceScope.isEmpty()) "" else {
+            " AND se.source_id IN (${sourceScope.joinToString(",") { "?" }})"
+        }
         val sql = """
             SELECT
-                'entry:' || e.code AS row_key,
-                e.code,
-                e.title,
-                COALESCE(e.media_id, 0) AS media_id,
-                COALESCE(e.cover_ext, '') AS cover_ext,
-                COALESCE(NULLIF(e.read_at, ''), e.added_at, '') AS read_at,
-                CASE WHEN e.num_pages > 0 THEN e.num_pages ELSE 0 END AS pages_viewed,
-                0 AS seconds_elapsed,
-                0 AS session_count,
-                0 AS is_reread
-            FROM entries e
-            WHERE COALESCE(e.read_state, 0) = 1
+                'entry:' || se.source_id || ':' || se.remote_id AS row_key,
+                CASE WHEN se.source_id='nhentai' THEN COALESCE(se.legacy_code, 0) ELSE -se.id END AS code,
+                se.title, se.thumbnail_url, se.source_id, se.remote_id, se.unit_label,
+                COALESCE(NULLIF(pe.read_at, ''), pe.added_at, '') AS read_at,
+                CASE WHEN se.unit_count > 0 THEN se.unit_count ELSE 0 END AS pages_viewed,
+                0 AS seconds_elapsed, 0 AS session_count, 0 AS is_reread, 0 AS chapter_count
+            FROM profile_entries pe
+            JOIN source_entries se ON se.id=pe.source_entry_id
+            WHERE pe.profile_id=? AND se.source_id='nhentai' AND COALESCE(pe.read_state, 0) = 1$sourceFilter
               AND $entryDateExpr = ?
             UNION ALL
             SELECT
                 'session:' || s.id AS row_key,
-                e.code,
-                e.title,
-                COALESCE(e.media_id, 0) AS media_id,
-                COALESCE(e.cover_ext, '') AS cover_ext,
+                CASE WHEN se.source_id='nhentai' THEN COALESCE(se.legacy_code, 0) ELSE -se.id END AS code,
+                se.title, se.thumbnail_url, se.source_id, se.remote_id, 'pages' AS unit_label,
                 COALESCE(s.ended_at, s.started_at, '') AS read_at,
                 CASE WHEN s.pages_viewed > 0 THEN s.pages_viewed ELSE 0 END AS pages_viewed,
                 CASE WHEN s.seconds_elapsed > 0 THEN s.seconds_elapsed ELSE 0 END AS seconds_elapsed,
-                1 AS session_count,
-                1 AS is_reread
+                1 AS session_count, COALESCE(s.is_reread, 0) AS is_reread, 0 AS chapter_count
             FROM reading_sessions s
-            JOIN entries e ON e.code = s.entry_code
-            WHERE $sessionDateExpr = ?
-              AND COALESCE(s.is_reread, 0) = 1
-            ORDER BY read_at DESC, e.code DESC
+            JOIN source_entries se ON se.source_id=s.source_id AND se.remote_id=s.remote_id
+            WHERE s.profile_id=? AND $sessionDateExpr = ?
+              AND s.source_id='nhentai' AND COALESCE(s.is_reread, 0) = 1$sourceFilter
+            UNION ALL
+            SELECT
+                'chapter-day:' || s.source_id || ':' || s.remote_id || ':' || $sessionDateExpr AS row_key,
+                -se.id AS code,
+                se.title, se.thumbnail_url, se.source_id, se.remote_id, 'pages' AS unit_label,
+                MAX(COALESCE(NULLIF(s.ended_at, ''), s.started_at, '')) AS read_at,
+                COALESCE(SUM(CASE WHEN s.pages_viewed > 0 THEN s.pages_viewed ELSE 0 END), 0) AS pages_viewed,
+                COALESCE(SUM(CASE WHEN s.seconds_elapsed > 0 THEN s.seconds_elapsed ELSE 0 END), 0) AS seconds_elapsed,
+                COUNT(*) AS session_count, 0 AS is_reread,
+                COUNT(DISTINCT CASE WHEN COALESCE(s.chapter_id, '')<>'' THEN s.chapter_id END) AS chapter_count
+            FROM reading_sessions s
+            JOIN source_entries se ON se.source_id=s.source_id AND se.remote_id=s.remote_id
+            WHERE s.profile_id=? AND $sessionDateExpr = ?
+              AND s.source_id<>'nhentai'$sourceFilter
+            GROUP BY s.source_id, s.remote_id, se.id, se.title, se.thumbnail_url, $sessionDateExpr
+            ORDER BY read_at DESC, code DESC
         """.trimIndent()
-        readableDatabase.rawQuery(sql, arrayOf(dayKey, dayKey)).use { cursor ->
+        val queryArgs = listOf(profileId) + sourceScope + dayKey +
+            profileId + dayKey + sourceScope +
+            profileId + dayKey + sourceScope
+        readableDatabase.rawQuery(sql, queryArgs.toTypedArray()).use { cursor ->
             val idxRowKey = cursor.getColumnIndexOrThrow("row_key")
             val idxCode = cursor.getColumnIndexOrThrow("code")
             val idxTitle = cursor.getColumnIndexOrThrow("title")
-            val idxMediaId = cursor.getColumnIndexOrThrow("media_id")
-            val idxCoverExt = cursor.getColumnIndexOrThrow("cover_ext")
+            val idxThumbnail = cursor.getColumnIndexOrThrow("thumbnail_url")
+            val idxSourceId = cursor.getColumnIndexOrThrow("source_id")
+            val idxRemoteId = cursor.getColumnIndexOrThrow("remote_id")
+            val idxUnitLabel = cursor.getColumnIndexOrThrow("unit_label")
             val idxReadAt = cursor.getColumnIndexOrThrow("read_at")
             val idxPages = cursor.getColumnIndexOrThrow("pages_viewed")
             val idxSeconds = cursor.getColumnIndexOrThrow("seconds_elapsed")
             val idxSessions = cursor.getColumnIndexOrThrow("session_count")
             val idxReread = cursor.getColumnIndexOrThrow("is_reread")
+            val idxChapters = cursor.getColumnIndexOrThrow("chapter_count")
             while (cursor.moveToNext()) {
-                val code = cursor.getInt(idxCode)
-                val mediaId = cursor.getLong(idxMediaId)
-                val coverExt = cursor.getString(idxCoverExt).orEmpty()
                 rows += DayReadEntryRow(
                     rowKey = cursor.getString(idxRowKey).orEmpty(),
-                    code = code,
+                    code = cursor.getInt(idxCode),
                     title = cursor.getString(idxTitle).orEmpty(),
-                    thumbnailUrl = buildThumbnailUrl(mediaId, coverExt),
+                    thumbnailUrl = cursor.getString(idxThumbnail).orEmpty(),
                     readAt = cursor.getString(idxReadAt).orEmpty(),
                     pagesViewed = cursor.getInt(idxPages).coerceAtLeast(0),
                     secondsElapsed = cursor.getLong(idxSeconds).coerceAtLeast(0L),
                     sessionCount = cursor.getInt(idxSessions).coerceAtLeast(0),
-                    isReread = cursor.getInt(idxReread) != 0
+                    chapterCount = cursor.getInt(idxChapters).coerceAtLeast(0),
+                    isReread = cursor.getInt(idxReread) != 0,
+                    sourceId = cursor.getString(idxSourceId).orEmpty(),
+                    remoteId = cursor.getString(idxRemoteId).orEmpty(),
+                    unitLabel = cursor.getString(idxUnitLabel).orEmpty().ifBlank { "pages" }
                 )
             }
         }
         return rows
     }
 
-    private fun queryReadingSpeedStats(range: StatsRange): ReadingSpeedStats {
+    private fun queryReadingSpeedStats(range: StatsRange, profileId: String, sourceScope: Set<String>): ReadingSpeedStats {
         val (rangeSql, rangeArgs) = readRangeClauseForUtcTimestamp(range, "s.started_at")
+        val (scopeSql, scopeArgs) = sourceScopeClause("s.source_id", sourceScope)
         val sql = """
             SELECT
                 COALESCE(SUM(CASE WHEN s.pages_viewed > 0 THEN s.pages_viewed ELSE 0 END), 0) AS total_pages_viewed,
                 COALESCE(SUM(CASE WHEN s.seconds_elapsed > 0 THEN s.seconds_elapsed ELSE 0 END), 0) AS total_seconds_elapsed
             FROM reading_sessions s
-            WHERE 1 = 1$rangeSql
+            WHERE s.profile_id=?$scopeSql$rangeSql
         """.trimIndent()
-        readableDatabase.rawQuery(sql, rangeArgs.toTypedArray()).use { cursor ->
+        readableDatabase.rawQuery(sql, (listOf(profileId) + scopeArgs + rangeArgs).toTypedArray()).use { cursor ->
             if (cursor.moveToFirst()) {
                 val totalPages = cursor.getInt(cursor.getColumnIndexOrThrow("total_pages_viewed")).coerceAtLeast(0)
                 val totalSeconds = cursor.getLong(cursor.getColumnIndexOrThrow("total_seconds_elapsed")).coerceAtLeast(0L)
@@ -1958,7 +2676,7 @@ class SauceTrackerDatabase(
         return rows
     }
 
-    fun listSubscriptions(): List<SubscriptionRow> {
+    fun listSubscriptions(profileId: String? = ProfileStore(this).activeProfileId()): List<SubscriptionRow> {
         val rows = mutableListOf<SubscriptionRow>()
         readableDatabase.rawQuery(
             """
@@ -1967,11 +2685,14 @@ class SauceTrackerDatabase(
                    COALESCE(notification_dot_enabled, 1) AS notification_dot_enabled,
                    COALESCE(initialized, 0) AS initialized,
                    COALESCE(created_at, '') AS created_at,
-                   COALESCE(last_checked_at, '') AS last_checked_at
+                   COALESCE(last_checked_at, '') AS last_checked_at,
+                   COALESCE(profile_id, 'main') AS profile_id,
+                   COALESCE(source_id, 'nhentai') AS source_id
             FROM subscriptions
+            ${if (profileId == null) "" else "WHERE profile_id = ?"}
             ORDER BY LOWER(route_type) ASC, LOWER(route_name) ASC
             """.trimIndent(),
-            null
+            profileId?.let { arrayOf(it) }
         ).use { cursor ->
             val idxId = cursor.getColumnIndexOrThrow("id")
             val idxName = cursor.getColumnIndexOrThrow("route_name")
@@ -1981,6 +2702,8 @@ class SauceTrackerDatabase(
             val idxInitialized = cursor.getColumnIndexOrThrow("initialized")
             val idxCreatedAt = cursor.getColumnIndexOrThrow("created_at")
             val idxLastCheckedAt = cursor.getColumnIndexOrThrow("last_checked_at")
+            val idxProfileId = cursor.getColumnIndexOrThrow("profile_id")
+            val idxSourceId = cursor.getColumnIndexOrThrow("source_id")
             while (cursor.moveToNext()) {
                 rows += SubscriptionRow(
                     id = cursor.getLong(idxId),
@@ -1990,23 +2713,28 @@ class SauceTrackerDatabase(
                     notificationDotEnabled = cursor.getInt(idxDot) != 0,
                     initialized = cursor.getInt(idxInitialized) != 0,
                     createdAt = cursor.getString(idxCreatedAt).orEmpty(),
-                    lastCheckedAt = cursor.getString(idxLastCheckedAt).orEmpty()
+                    lastCheckedAt = cursor.getString(idxLastCheckedAt).orEmpty(),
+                    profileId = cursor.getString(idxProfileId).orEmpty(),
+                    sourceId = cursor.getString(idxSourceId).orEmpty()
                 )
             }
         }
         return rows
     }
 
-    fun upsertSubscription(routeType: String, routeName: String): SubscriptionRow? {
+    fun upsertSubscription(routeType: String, routeName: String, profileId: String = ProfileStore(this).activeProfileId(), sourceId: String = "nhentai"): SubscriptionRow? {
         val normalizedType = normalizeSubscriptionRouteType(routeType)
         val normalizedName = normalizeSubscriptionRouteName(normalizedType, routeName)
-        val routeKey = subscriptionRouteKey(normalizedType, normalizedName)
-        if (normalizedType.isBlank() || normalizedName.isBlank() || routeKey.isBlank()) return null
+        val logicalRouteKey = subscriptionRouteKey(normalizedType, normalizedName)
+        if (normalizedType.isBlank() || normalizedName.isBlank() || logicalRouteKey.isBlank()) return null
+        val routeKey = "$profileId|$sourceId|$logicalRouteKey"
         val now = utcNowString()
         val values = ContentValues().apply {
             put("route_name", normalizedName)
             put("route_type", normalizedType)
             put("route_key", routeKey)
+            put("profile_id", profileId)
+            put("source_id", sourceId)
             put("created_at", now)
         }
         val db = writableDatabase
@@ -2123,14 +2851,50 @@ class SauceTrackerDatabase(
         return inserted
     }
 
-    fun listSubscriptionEvents(includeDismissed: Boolean = false): List<SubscriptionEventRow> {
+    fun insertSourceSubscriptionEvents(subscriptionId: Long, entries: List<SourceEntry>): Int {
+        if (subscriptionId <= 0L || entries.isEmpty()) return 0
+        val db = writableDatabase
+        val discoveredAt = utcNowString()
+        var inserted = 0
+        db.beginTransaction()
+        try {
+            entries.distinctBy { it.key.storageKey }.forEach { entry ->
+                val values = ContentValues().apply {
+                    put("subscription_id", subscriptionId)
+                    put("code", entry.key.uiCode())
+                    put("title", entry.title)
+                    put("thumbnail_url", entry.thumbnailUrl)
+                    put("num_pages", entry.unitCount.coerceAtLeast(0))
+                    put("upload_date", entry.publishedAt)
+                    put("source_url", entry.canonicalUrl)
+                    put("source_id", entry.key.sourceId.value)
+                    put("remote_id", entry.key.remoteId)
+                    put("discovered_at", discoveredAt)
+                }
+                if (db.insertWithOnConflict("subscription_events", null, values, SQLiteDatabase.CONFLICT_IGNORE) != -1L) {
+                    inserted += 1
+                }
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+        return inserted
+    }
+
+    fun listSubscriptionEvents(includeDismissed: Boolean = false, profileId: String? = ProfileStore(this).activeProfileId()): List<SubscriptionEventRow> {
         val rows = mutableListOf<SubscriptionEventRow>()
         val whereClause = if (includeDismissed) {
-            ""
+            if (profileId == null) "" else "WHERE s.profile_id = ?"
         } else {
             """
             WHERE COALESCE(e.dismissed, 0) = 0
-              AND NOT EXISTS (SELECT 1 FROM entries imported WHERE imported.code = e.code)
+              ${if (profileId == null) "" else "AND s.profile_id = ?"}
+              AND NOT EXISTS (
+                  SELECT 1 FROM profile_entries pe
+                  JOIN source_entries se ON se.id=pe.source_entry_id
+                  WHERE pe.profile_id=s.profile_id AND se.source_id=e.source_id AND se.remote_id=e.remote_id
+              )
             """.trimIndent()
         }
         readableDatabase.rawQuery(
@@ -2148,13 +2912,16 @@ class SauceTrackerDatabase(
                 COALESCE(e.source_url, '') AS source_url,
                 COALESCE(e.discovered_at, '') AS discovered_at,
                 COALESCE(e.dismissed, 0) AS dismissed,
-                COALESCE(e.pinned, 0) AS pinned
+                COALESCE(e.pinned, 0) AS pinned,
+                COALESCE(s.profile_id, 'main') AS profile_id,
+                COALESCE(e.source_id, s.source_id, 'nhentai') AS source_id,
+                COALESCE(NULLIF(e.remote_id, ''), CAST(e.code AS TEXT)) AS remote_id
             FROM subscription_events e
             JOIN subscriptions s ON s.id = e.subscription_id
             $whereClause
             ORDER BY COALESCE(e.pinned, 0) DESC, COALESCE(e.discovered_at, '') DESC, e.id DESC
             """.trimIndent(),
-            null
+            profileId?.let { arrayOf(it) }
         ).use { cursor ->
             val idxId = cursor.getColumnIndexOrThrow("id")
             val idxSubscriptionId = cursor.getColumnIndexOrThrow("subscription_id")
@@ -2169,6 +2936,9 @@ class SauceTrackerDatabase(
             val idxDiscoveredAt = cursor.getColumnIndexOrThrow("discovered_at")
             val idxDismissed = cursor.getColumnIndexOrThrow("dismissed")
             val idxPinned = cursor.getColumnIndexOrThrow("pinned")
+            val idxProfileId = cursor.getColumnIndexOrThrow("profile_id")
+            val idxSourceId = cursor.getColumnIndexOrThrow("source_id")
+            val idxRemoteId = cursor.getColumnIndexOrThrow("remote_id")
             while (cursor.moveToNext()) {
                 rows += SubscriptionEventRow(
                     id = cursor.getLong(idxId),
@@ -2183,7 +2953,10 @@ class SauceTrackerDatabase(
                     sourceUrl = cursor.getString(idxSourceUrl).orEmpty(),
                     discoveredAt = cursor.getString(idxDiscoveredAt).orEmpty(),
                     dismissed = cursor.getInt(idxDismissed) != 0,
-                    pinned = cursor.getInt(idxPinned) != 0
+                    pinned = cursor.getInt(idxPinned) != 0,
+                    profileId = cursor.getString(idxProfileId).orEmpty(),
+                    sourceId = cursor.getString(idxSourceId).orEmpty(),
+                    remoteId = cursor.getString(idxRemoteId).orEmpty()
                 )
             }
         }
@@ -2218,7 +2991,11 @@ class SauceTrackerDatabase(
             JOIN subscriptions s ON s.id = e.subscription_id
             WHERE COALESCE(e.dismissed, 0) = 0
               AND COALESCE(s.notification_dot_enabled, 1) = 1
-              AND NOT EXISTS (SELECT 1 FROM entries imported WHERE imported.code = e.code)
+              AND NOT EXISTS (
+                  SELECT 1 FROM profile_entries pe
+                  JOIN source_entries se ON se.id=pe.source_entry_id
+                  WHERE pe.profile_id=s.profile_id AND se.source_id=e.source_id AND se.remote_id=e.remote_id
+              )
             """.trimIndent(),
             null
         ).use { cursor ->
@@ -2237,7 +3014,11 @@ class SauceTrackerDatabase(
             JOIN subscriptions s ON s.id = e.subscription_id
             WHERE COALESCE(e.dismissed, 0) = 0
               AND COALESCE(s.notifications_enabled, 1) = 1
-              AND NOT EXISTS (SELECT 1 FROM entries imported WHERE imported.code = e.code)
+              AND NOT EXISTS (
+                  SELECT 1 FROM profile_entries pe
+                  JOIN source_entries se ON se.id=pe.source_entry_id
+                  WHERE pe.profile_id=s.profile_id AND se.source_id=e.source_id AND se.remote_id=e.remote_id
+              )
             """.trimIndent(),
             null
         ).use { cursor ->
@@ -2248,10 +3029,10 @@ class SauceTrackerDatabase(
         return 0
     }
 
-    fun findSubscription(routeType: String, routeName: String): SubscriptionRow? {
-        val routeKey = subscriptionRouteKey(routeType, routeName)
-        if (routeKey.isBlank()) return null
-        return findSubscriptionByKey(routeKey)
+    fun findSubscription(routeType: String, routeName: String, profileId: String = ProfileStore(this).activeProfileId(), sourceId: String = "nhentai"): SubscriptionRow? {
+        val logicalRouteKey = subscriptionRouteKey(routeType, routeName)
+        if (logicalRouteKey.isBlank()) return null
+        return findSubscriptionByKey("$profileId|$sourceId|$logicalRouteKey")
     }
 
     private fun findSubscriptionByKey(routeKey: String): SubscriptionRow? {
@@ -2263,7 +3044,9 @@ class SauceTrackerDatabase(
                    COALESCE(notification_dot_enabled, 1) AS notification_dot_enabled,
                    COALESCE(initialized, 0) AS initialized,
                    COALESCE(created_at, '') AS created_at,
-                   COALESCE(last_checked_at, '') AS last_checked_at
+                   COALESCE(last_checked_at, '') AS last_checked_at,
+                   COALESCE(profile_id, 'main') AS profile_id,
+                   COALESCE(source_id, 'nhentai') AS source_id
             FROM subscriptions
             WHERE route_key = ?
             LIMIT 1
@@ -2279,20 +3062,31 @@ class SauceTrackerDatabase(
                 notificationDotEnabled = cursor.getInt(cursor.getColumnIndexOrThrow("notification_dot_enabled")) != 0,
                 initialized = cursor.getInt(cursor.getColumnIndexOrThrow("initialized")) != 0,
                 createdAt = cursor.getString(cursor.getColumnIndexOrThrow("created_at")).orEmpty(),
-                lastCheckedAt = cursor.getString(cursor.getColumnIndexOrThrow("last_checked_at")).orEmpty()
+                lastCheckedAt = cursor.getString(cursor.getColumnIndexOrThrow("last_checked_at")).orEmpty(),
+                profileId = cursor.getString(cursor.getColumnIndexOrThrow("profile_id")).orEmpty(),
+                sourceId = cursor.getString(cursor.getColumnIndexOrThrow("source_id")).orEmpty()
             )
         }
     }
 
-    fun setEntryRating(code: Int, rating: Int) {
+    fun setEntryRating(code: Int, rating: Int, profileId: String = ProfileStore(this).activeProfileId()) {
         val safeRating = rating.coerceIn(0, 5)
-        val values = ContentValues().apply {
-            put("rating", safeRating)
+        if (profileId == ProfileStore.MAIN_PROFILE_ID) {
+            val values = ContentValues().apply { put("rating", safeRating) }
+            writableDatabase.update("entries", values, "code = ?", arrayOf(code.toString()))
         }
-        writableDatabase.update("entries", values, "code = ?", arrayOf(code.toString()))
+        SourceEntryStore(this).updateState(
+            profileId,
+            SourceEntryKey(SourceId("nhentai"), code.toString()),
+            rating = safeRating
+        )
     }
 
-    fun setEntryRead(code: Int, isRead: Boolean) {
+    fun setEntryRead(code: Int, isRead: Boolean, profileId: String = ProfileStore(this).activeProfileId()) {
+        if (profileId != ProfileStore.MAIN_PROFILE_ID) {
+            SourceEntryStore(this).updateState(profileId, SourceEntryKey(SourceId("nhentai"), code.toString()), read = isRead)
+            return
+        }
         val db = writableDatabase
         db.beginTransaction()
         try {
@@ -2353,6 +3147,11 @@ class SauceTrackerDatabase(
         } finally {
             db.endTransaction()
         }
+        SourceEntryStore(this).updateState(
+            profileId,
+            SourceEntryKey(SourceId("nhentai"), code.toString()),
+            read = isRead
+        )
     }
 
     fun insertReadingSession(
@@ -2362,9 +3161,16 @@ class SauceTrackerDatabase(
         pagesViewed: Int,
         secondsElapsed: Long,
         rating: Int = 0,
-        isReread: Boolean = false
+        isReread: Boolean = false,
+        profileId: String = ProfileStore(this).activeProfileId(),
+        sourceId: String = "nhentai",
+        remoteId: String = entryCode.toString(),
+        chapterId: String = "",
+        checkpointSessionKey: String? = null
     ) {
         if (entryCode <= 0) return
+        val safeSourceId = sourceId.trim().ifBlank { "nhentai" }
+        val safeRemoteId = remoteId.trim().ifBlank { entryCode.toString() }
         val startMs = startedAtMillisUtc.coerceAtLeast(0L)
         val endMs = endedAtMillisUtc.coerceAtLeast(startMs)
         val safeSeconds = secondsElapsed.coerceAtLeast(1L)
@@ -2390,11 +3196,164 @@ class SauceTrackerDatabase(
             put("seconds_elapsed", safeSeconds)
             put("rating", safeRating)
             put("is_reread", if (isReread) 1 else 0)
+            put("profile_id", profileId)
+            put("source_id", safeSourceId)
+            put("remote_id", safeRemoteId)
+            put("chapter_id", chapterId.trim())
+            put("session_key", checkpointSessionKey ?: UUID.randomUUID().toString())
         }
-        writableDatabase.insert("reading_sessions", null, values)
+        val target = writableDatabase
+        target.beginTransaction()
+        try {
+            if (checkpointSessionKey != null) target.rawQuery(
+                "SELECT pages_viewed,seconds_elapsed,started_at FROM reading_sessions WHERE session_key=? AND profile_id=? AND source_id=? AND remote_id=? AND chapter_id=? LIMIT 1",
+                arrayOf(checkpointSessionKey, profileId, safeSourceId, safeRemoteId, chapterId.trim())
+            ).use { previous ->
+                if (previous.moveToFirst()) {
+                    values.put("pages_viewed", maxOf(safePagesViewed, previous.getInt(0)))
+                    values.put("seconds_elapsed", maxOf(safeSeconds, previous.getLong(1)))
+                    values.put("started_at", minOf(startedAt, previous.getString(2)))
+                }
+            }
+            val updated = if (checkpointSessionKey == null) 0 else target.update(
+                "reading_sessions", values, "session_key=? AND profile_id=? AND source_id=? AND remote_id=? AND chapter_id=?",
+                arrayOf(checkpointSessionKey, profileId, safeSourceId, safeRemoteId, chapterId.trim())
+            )
+            if (updated == 0) target.insertOrThrow("reading_sessions", null, values)
+            target.setTransactionSuccessful()
+        } finally { target.endTransaction() }
     }
 
-    fun recordEntryRatingSession(code: Int, rating: Int, isReread: Boolean) {
+    fun sourceReaderProgress(
+        profileId: String,
+        sourceId: String,
+        remoteId: String
+    ): SourceReaderProgress? {
+        val safeProfile = profileId.trim()
+        val safeSource = sourceId.trim()
+        val safeRemote = remoteId.trim()
+        if (safeProfile.isBlank() || safeSource.isBlank() || safeRemote.isBlank()) return null
+        return readableDatabase.rawQuery(
+            "SELECT chapter_id,page_index FROM source_reader_progress WHERE profile_id=? AND source_id=? AND remote_id=?",
+            arrayOf(safeProfile, safeSource, safeRemote)
+        ).use { cursor ->
+            if (!cursor.moveToFirst()) null else SourceReaderProgress(
+                chapterId = cursor.getString(0).orEmpty(),
+                pageIndex = cursor.getInt(1).coerceAtLeast(0)
+            ).takeIf { it.chapterId.isNotBlank() }
+        }
+    }
+
+    fun saveSourceReaderProgress(
+        profileId: String,
+        sourceId: String,
+        remoteId: String,
+        chapterId: String,
+        pageIndex: Int,
+        pageCount: Int = 0
+    ) {
+        val safeProfile = profileId.trim()
+        val safeSource = sourceId.trim()
+        val safeRemote = remoteId.trim()
+        val safeChapter = chapterId.trim()
+        if (safeProfile.isBlank() || safeSource.isBlank() || safeRemote.isBlank() || safeChapter.isBlank()) return
+        val values = ContentValues().apply {
+            put("profile_id", safeProfile)
+            put("source_id", safeSource)
+            put("remote_id", safeRemote)
+            put("chapter_id", safeChapter)
+            put("page_index", pageIndex.coerceAtLeast(0))
+            put("updated_at", utcNowString())
+        }
+        writableDatabase.insertWithOnConflict(
+            "source_reader_progress",
+            null,
+            values,
+            SQLiteDatabase.CONFLICT_REPLACE
+        )
+        val safeIndex = pageIndex.coerceAtLeast(0)
+        val existing = sourceChapterProgress(safeProfile, safeSource, safeRemote)[safeChapter]
+        val existingCompletedAt = readableDatabase.rawQuery(
+            "SELECT completed_at FROM source_chapter_progress WHERE profile_id=? AND source_id=? AND remote_id=? AND chapter_id=?",
+            arrayOf(safeProfile, safeSource, safeRemote, safeChapter)
+        ).use { cursor -> if (cursor.moveToFirst()) cursor.getString(0).orEmpty() else "" }
+        val furthest = maxOf(existing?.furthestPageIndex ?: 0, safeIndex)
+        val knownCount = maxOf(existing?.pageCount ?: 0, pageCount.coerceAtLeast(0))
+        writableDatabase.insertWithOnConflict(
+            "source_chapter_progress",
+            null,
+            ContentValues().apply {
+                put("profile_id", safeProfile)
+                put("source_id", safeSource)
+                put("remote_id", safeRemote)
+                put("chapter_id", safeChapter)
+                put("furthest_page_index", furthest)
+                put("page_count", knownCount)
+                put("completed", if (knownCount > 0 && furthest >= knownCount - 1) 1 else 0)
+                put("completed_at", existingCompletedAt)
+                put("updated_at", utcNowString())
+            },
+            SQLiteDatabase.CONFLICT_REPLACE
+        )
+    }
+
+    fun markSourceChapterCompleted(
+        profileId: String,
+        sourceId: String,
+        remoteId: String,
+        chapterId: String
+    ): Boolean {
+        val key = arrayOf(profileId.trim(), sourceId.trim(), remoteId.trim(), chapterId.trim())
+        if (key.any(String::isBlank)) return false
+        val alreadyRecorded = readableDatabase.rawQuery(
+            "SELECT completed_at FROM source_chapter_progress WHERE profile_id=? AND source_id=? AND remote_id=? AND chapter_id=?",
+            key
+        ).use { cursor -> cursor.moveToFirst() && cursor.getString(0).orEmpty().isNotBlank() }
+        if (alreadyRecorded) return false
+        val now = utcNowString()
+        val updated = writableDatabase.update(
+            "source_chapter_progress",
+            ContentValues().apply {
+                put("completed", 1)
+                put("completed_at", now)
+                put("updated_at", now)
+            },
+            "profile_id=? AND source_id=? AND remote_id=? AND chapter_id=?",
+            key
+        )
+        if (updated > 0) return true
+        return writableDatabase.insertWithOnConflict(
+            "source_chapter_progress",
+            null,
+            ContentValues().apply {
+                put("profile_id", key[0])
+                put("source_id", key[1])
+                put("remote_id", key[2])
+                put("chapter_id", key[3])
+                put("completed", 1)
+                put("completed_at", now)
+                put("updated_at", now)
+            },
+            SQLiteDatabase.CONFLICT_IGNORE
+        ) != -1L
+    }
+
+    fun sourceChapterProgress(profileId: String, sourceId: String, remoteId: String): Map<String, SourceChapterProgress> {
+        if (profileId.isBlank() || sourceId.isBlank() || remoteId.isBlank()) return emptyMap()
+        return readableDatabase.rawQuery(
+            "SELECT chapter_id,furthest_page_index,page_count,completed FROM source_chapter_progress WHERE profile_id=? AND source_id=? AND remote_id=?",
+            arrayOf(profileId.trim(), sourceId.trim(), remoteId.trim())
+        ).use { cursor ->
+            buildMap {
+                while (cursor.moveToNext()) {
+                    val row = SourceChapterProgress(cursor.getString(0), cursor.getInt(1), cursor.getInt(2), cursor.getInt(3) != 0)
+                    put(row.chapterId, row)
+                }
+            }
+        }
+    }
+
+    fun recordEntryRatingSession(code: Int, rating: Int, isReread: Boolean, profileId: String = ProfileStore(this).activeProfileId()) {
         if (code <= 0) return
         val now = System.currentTimeMillis()
         insertReadingSession(
@@ -2404,7 +3363,8 @@ class SauceTrackerDatabase(
             pagesViewed = 1,
             secondsElapsed = 1L,
             rating = rating.coerceIn(0, 5),
-            isReread = isReread
+            isReread = isReread,
+            profileId = profileId
         )
     }
 
@@ -2629,30 +3589,24 @@ class SauceTrackerDatabase(
         }
     }
 
-    fun setEntryPinned(code: Int, pinned: Boolean) {
-        val values = ContentValues().apply {
-            put("pinned", if (pinned) 1 else 0)
+    fun setEntryPinned(code: Int, pinned: Boolean, profileId: String = ProfileStore(this).activeProfileId()) {
+        if (profileId == ProfileStore.MAIN_PROFILE_ID) {
+            val values = ContentValues().apply { put("pinned", if (pinned) 1 else 0) }
+            writableDatabase.update("entries", values, "code = ?", arrayOf(code.toString()))
         }
-        writableDatabase.update("entries", values, "code = ?", arrayOf(code.toString()))
+        SourceEntryStore(this).updateState(
+            profileId,
+            SourceEntryKey(SourceId("nhentai"), code.toString()),
+            pinned = pinned
+        )
     }
 
-    fun isEntryPinned(code: Int): Boolean {
+    fun isEntryPinned(code: Int, profileId: String = ProfileStore(this).activeProfileId()): Boolean {
         if (code <= 0) return false
-        return readableDatabase.rawQuery(
-            """
-            SELECT COALESCE(pinned, 0) AS pinned
-            FROM entries
-            WHERE code = ?
-            LIMIT 1
-            """.trimIndent(),
-            arrayOf(code.toString())
-        ).use { cursor ->
-            if (!cursor.moveToFirst()) return@use false
-            cursor.getInt(cursor.getColumnIndexOrThrow("pinned")) != 0
-        }
+        return ProfileStore(this).state(profileId, SourceEntryKey(SourceId("nhentai"), code.toString()))?.pinned == true
     }
 
-    fun getBrowserLibraryStates(codes: List<Int>): Map<Int, BrowserLibraryStateRow> {
+    fun getBrowserLibraryStates(codes: List<Int>, profileId: String = ProfileStore(this).activeProfileId()): Map<Int, BrowserLibraryStateRow> {
         val safeCodes = codes.filter { it > 0 }.distinct()
         if (safeCodes.isEmpty()) return emptyMap()
         val out = linkedMapOf<Int, BrowserLibraryStateRow>()
@@ -2660,14 +3614,14 @@ class SauceTrackerDatabase(
             val placeholders = chunk.joinToString(",") { "?" }
             readableDatabase.rawQuery(
                 """
-                SELECT code,
-                       COALESCE(rating, 0) AS rating,
-                       COALESCE(read_state, 0) AS read_state,
-                       COALESCE(pinned, 0) AS pinned
-                FROM entries
-                WHERE code IN ($placeholders)
+                SELECT CAST(se.remote_id AS INTEGER) AS code,
+                       COALESCE(pe.rating, 0) AS rating,
+                       COALESCE(pe.read_state, 0) AS read_state,
+                       COALESCE(pe.pinned, 0) AS pinned
+                FROM profile_entries pe JOIN source_entries se ON se.id=pe.source_entry_id
+                WHERE pe.profile_id=? AND se.source_id='nhentai' AND se.remote_id IN ($placeholders)
                 """.trimIndent(),
-                chunk.map { it.toString() }.toTypedArray()
+                (listOf(profileId) + chunk.map { it.toString() }).toTypedArray()
             ).use { cursor ->
                 val idxCode = cursor.getColumnIndexOrThrow("code")
                 val idxRating = cursor.getColumnIndexOrThrow("rating")
@@ -3333,7 +4287,8 @@ class SauceTrackerDatabase(
         return rows
     }
 
-    fun getEntryDetail(code: Int): EntryDetail? {
+    fun getEntryDetail(code: Int, profileId: String = ProfileStore(this).activeProfileId()): EntryDetail? {
+        val profileState = ProfileStore(this).state(profileId, SourceEntryKey(SourceId("nhentai"), code.toString())) ?: return null
         val entry = readableDatabase.rawQuery(
             """
             SELECT code, title, subtitle, source_url, num_pages, upload_date, rating, read_state, read_at, fetched_at, added_at, media_id, cover_ext
@@ -3388,10 +4343,17 @@ class SauceTrackerDatabase(
             }
         }
 
-        return entry.copy(tagsByType = tagsByType)
+        return entry.copy(
+            rating = profileState.rating,
+            isRead = profileState.isRead,
+            readAt = profileState.readAt,
+            addedAt = profileState.addedAt,
+            fetchedAt = profileState.fetchedAt,
+            tagsByType = tagsByType
+        )
     }
 
-    fun getEntryDetails(codes: List<Int>): List<EntryDetail> {
+    fun getEntryDetails(codes: List<Int>, profileId: String = ProfileStore(this).activeProfileId()): List<EntryDetail> {
         val requestedCodes = codes
             .asSequence()
             .filter { it > 0 }
@@ -3474,8 +4436,17 @@ class SauceTrackerDatabase(
             }
         }
 
+        val profileStates = SourceEntryStore(this).statesForSource(profileId, SourceId("nhentai"))
         return requestedCodes.mapNotNull { code ->
-            detailsByCode[code]?.copy(tagsByType = tagsByCode[code] ?: linkedMapOf())
+            val state = profileStates[code.toString()] ?: return@mapNotNull null
+            detailsByCode[code]?.copy(
+                rating = state.rating,
+                isRead = state.isRead,
+                readAt = state.readAt,
+                addedAt = state.addedAt,
+                fetchedAt = state.fetchedAt,
+                tagsByType = tagsByCode[code] ?: linkedMapOf()
+            )
         }
     }
 
@@ -3570,7 +4541,7 @@ class SauceTrackerDatabase(
                     is String -> raw.trim().toIntOrNull() ?: 0
                     else -> 0
                 }
-                if (code <= 0) continue
+                if (code == 0) continue
                 val snapshotNode = snapshotNodesByCode[code] ?: continue
                 val dominantCircleTags = buildList {
                     val tags = obj.optJSONArray("dominant_circle_tags") ?: JSONArray()
@@ -3798,6 +4769,34 @@ class SauceTrackerDatabase(
             .put("subscription_seen_codes", exportSubscriptionSeenCodesSnapshot())
             .put("subscription_events", exportSubscriptionEventsSnapshot())
             .put("entry_heatmap_cache", exportEntryHeatmapCacheSnapshot())
+            .put("source_platform", exportSourcePlatformSnapshot())
+    }
+
+    fun exportSourcePlatformSnapshot(): JSONObject {
+        val tableColumns = SourcePlatformBackup.columns
+        return JSONObject().put("schema_version", SourcePlatformBackup.VERSION).also { root ->
+            tableColumns.forEach { (table, columns) -> root.put(table, exportRows(table, columns)) }
+        }
+    }
+
+    private fun exportRows(table: String, columns: List<String>): JSONArray {
+        val rows = JSONArray()
+        readableDatabase.rawQuery("SELECT ${columns.joinToString(",")} FROM $table", null).use { cursor ->
+            while (cursor.moveToNext()) {
+                rows.put(JSONObject().also { row ->
+                    columns.forEachIndexed { index, column ->
+                        when (cursor.getType(index)) {
+                            android.database.Cursor.FIELD_TYPE_NULL -> row.put(column, JSONObject.NULL)
+                            android.database.Cursor.FIELD_TYPE_INTEGER -> row.put(column, cursor.getLong(index))
+                            android.database.Cursor.FIELD_TYPE_FLOAT -> row.put(column, cursor.getDouble(index))
+                            android.database.Cursor.FIELD_TYPE_BLOB -> row.put(column, Base64.getEncoder().encodeToString(cursor.getBlob(index)))
+                            else -> row.put(column, cursor.getString(index))
+                        }
+                    }
+                })
+            }
+        }
+        return rows
     }
 
     /**
@@ -3868,6 +4867,38 @@ class SauceTrackerDatabase(
         return JSONObject().put("entries", entriesArray)
     }
 
+    /** Add provider/local tags without discarding another provider's catalog or blocked choices. */
+    fun mergePopularTags(rows: List<PopularTagSeed>) {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            rows.forEach { row ->
+                val normalizedName = normalizeTagName(row.name)
+                val type = row.type.trim().lowercase(Locale.US)
+                if (normalizedName.isBlank() || type.isBlank()) return@forEach
+                db.insertWithOnConflict("popular_tags", null, ContentValues().apply {
+                    put("name", row.name.trim()); put("type", type); put("normalized_name", normalizedName)
+                    put("tag_count", row.count.coerceAtLeast(0)); put("blocked", 0)
+                }, SQLiteDatabase.CONFLICT_IGNORE)
+                // Keep row identity and blocked state intact when another source shares a tag.
+                db.execSQL("UPDATE popular_tags SET tag_count=MAX(tag_count,?) WHERE normalized_name=? AND type=?",
+                    arrayOf(row.count.coerceAtLeast(0), normalizedName, type))
+            }
+            db.setTransactionSuccessful()
+        } finally { db.endTransaction() }
+    }
+
+    fun profileTagCatalog(profileId: String, sourceScope: Set<String>): List<PopularTagSeed> {
+        if (sourceScope.isEmpty()) return emptyList()
+        return readableDatabase.rawQuery(
+            """SELECT MIN(st.name),st.type,COUNT(DISTINCT se.id)
+                FROM source_entry_tags st JOIN source_entries se ON se.id=st.source_entry_id
+                JOIN profile_entries pe ON pe.source_entry_id=se.id
+                WHERE pe.profile_id=? AND se.source_id IN (${sourceScope.joinToString(",") { "?" }})
+                GROUP BY st.normalized_name,st.type""", (listOf(profileId) + sourceScope).toTypedArray()
+        ).use { c -> buildList { while (c.moveToNext()) add(PopularTagSeed(c.getString(0), c.getString(1), c.getInt(2))) } }
+    }
+
     fun suggestionLibraryRevision(): String {
         readableDatabase.rawQuery(
             """
@@ -3903,7 +4934,9 @@ class SauceTrackerDatabase(
                 COALESCE(notification_dot_enabled, 1) AS notification_dot_enabled,
                 COALESCE(initialized, 0) AS initialized,
                 COALESCE(created_at, '') AS created_at,
-                COALESCE(last_checked_at, '') AS last_checked_at
+                COALESCE(last_checked_at, '') AS last_checked_at,
+                COALESCE(profile_id, 'main') AS profile_id,
+                COALESCE(source_id, 'nhentai') AS source_id
             FROM subscriptions
             ORDER BY LOWER(route_type) ASC, LOWER(route_name) ASC
             """.trimIndent(),
@@ -3916,6 +4949,8 @@ class SauceTrackerDatabase(
             val idxInitialized = cursor.getColumnIndexOrThrow("initialized")
             val idxCreatedAt = cursor.getColumnIndexOrThrow("created_at")
             val idxLastCheckedAt = cursor.getColumnIndexOrThrow("last_checked_at")
+            val idxProfileId = cursor.getColumnIndexOrThrow("profile_id")
+            val idxSourceId = cursor.getColumnIndexOrThrow("source_id")
             while (cursor.moveToNext()) {
                 rows.put(
                     JSONObject()
@@ -3926,6 +4961,8 @@ class SauceTrackerDatabase(
                         .put("initialized", if (cursor.getInt(idxInitialized) != 0) 1 else 0)
                         .put("created_at", cursor.getString(idxCreatedAt).orEmpty())
                         .put("last_checked_at", cursor.getString(idxLastCheckedAt).orEmpty())
+                        .put("profile_id", cursor.getString(idxProfileId).orEmpty())
+                        .put("source_id", cursor.getString(idxSourceId).orEmpty())
                 )
             }
         }
@@ -3940,7 +4977,9 @@ class SauceTrackerDatabase(
                 s.route_name,
                 s.route_type,
                 sc.code,
-                COALESCE(sc.seen_at, '') AS seen_at
+                COALESCE(sc.seen_at, '') AS seen_at,
+                COALESCE(s.profile_id, 'main') AS profile_id,
+                COALESCE(s.source_id, 'nhentai') AS source_id
             FROM subscription_seen_codes sc
             JOIN subscriptions s ON s.id = sc.subscription_id
             ORDER BY LOWER(s.route_type) ASC, LOWER(s.route_name) ASC, sc.code ASC
@@ -3951,6 +4990,8 @@ class SauceTrackerDatabase(
             val idxType = cursor.getColumnIndexOrThrow("route_type")
             val idxCode = cursor.getColumnIndexOrThrow("code")
             val idxSeenAt = cursor.getColumnIndexOrThrow("seen_at")
+            val idxProfileId = cursor.getColumnIndexOrThrow("profile_id")
+            val idxSourceId = cursor.getColumnIndexOrThrow("source_id")
             while (cursor.moveToNext()) {
                 rows.put(
                     JSONObject()
@@ -3958,6 +4999,8 @@ class SauceTrackerDatabase(
                         .put("route_type", cursor.getString(idxType)?.trim().orEmpty())
                         .put("code", cursor.getInt(idxCode))
                         .put("seen_at", cursor.getString(idxSeenAt).orEmpty())
+                        .put("profile_id", cursor.getString(idxProfileId).orEmpty())
+                        .put("source_id", cursor.getString(idxSourceId).orEmpty())
                 )
             }
         }
@@ -3979,7 +5022,9 @@ class SauceTrackerDatabase(
                 COALESCE(e.source_url, '') AS source_url,
                 COALESCE(e.discovered_at, '') AS discovered_at,
                 COALESCE(e.dismissed, 0) AS dismissed,
-                COALESCE(e.pinned, 0) AS pinned
+                COALESCE(e.pinned, 0) AS pinned,
+                COALESCE(s.profile_id, 'main') AS profile_id,
+                COALESCE(s.source_id, 'nhentai') AS source_id
             FROM subscription_events e
             JOIN subscriptions s ON s.id = e.subscription_id
             ORDER BY COALESCE(e.discovered_at, '') ASC, e.code ASC
@@ -3997,6 +5042,8 @@ class SauceTrackerDatabase(
             val idxDiscovered = cursor.getColumnIndexOrThrow("discovered_at")
             val idxDismissed = cursor.getColumnIndexOrThrow("dismissed")
             val idxPinned = cursor.getColumnIndexOrThrow("pinned")
+            val idxProfileId = cursor.getColumnIndexOrThrow("profile_id")
+            val idxSourceId = cursor.getColumnIndexOrThrow("source_id")
             while (cursor.moveToNext()) {
                 rows.put(
                     JSONObject()
@@ -4011,6 +5058,8 @@ class SauceTrackerDatabase(
                         .put("discovered_at", cursor.getString(idxDiscovered).orEmpty())
                         .put("dismissed", if (cursor.getInt(idxDismissed) != 0) 1 else 0)
                         .put("pinned", if (cursor.getInt(idxPinned) != 0) 1 else 0)
+                        .put("profile_id", cursor.getString(idxProfileId).orEmpty())
+                        .put("source_id", cursor.getString(idxSourceId).orEmpty())
                 )
             }
         }
@@ -4048,7 +5097,12 @@ class SauceTrackerDatabase(
             """
             SELECT started_at, ended_at, day_key, entry_code, pages_viewed, seconds_elapsed,
                    COALESCE(rating, 0) AS rating,
-                   COALESCE(is_reread, 0) AS is_reread
+                   COALESCE(is_reread, 0) AS is_reread,
+                   COALESCE(profile_id, 'main') AS profile_id,
+                   COALESCE(source_id, 'nhentai') AS source_id,
+                   COALESCE(remote_id, CAST(entry_code AS TEXT)) AS remote_id,
+                   COALESCE(session_key, 'legacy:' || id) AS session_key,
+                   COALESCE(chapter_id, '') AS chapter_id
             FROM reading_sessions
             ORDER BY started_at ASC, id ASC
             """.trimIndent(),
@@ -4062,6 +5116,11 @@ class SauceTrackerDatabase(
             val idxSeconds = cursor.getColumnIndexOrThrow("seconds_elapsed")
             val idxRating = cursor.getColumnIndexOrThrow("rating")
             val idxIsReread = cursor.getColumnIndexOrThrow("is_reread")
+            val idxProfile = cursor.getColumnIndexOrThrow("profile_id")
+            val idxSourceId = cursor.getColumnIndexOrThrow("source_id")
+            val idxRemoteId = cursor.getColumnIndexOrThrow("remote_id")
+            val idxSessionKey = cursor.getColumnIndexOrThrow("session_key")
+            val idxChapterId = cursor.getColumnIndexOrThrow("chapter_id")
             while (cursor.moveToNext()) {
                 rows.put(
                     JSONObject()
@@ -4073,6 +5132,11 @@ class SauceTrackerDatabase(
                         .put("seconds_elapsed", cursor.getLong(idxSeconds).coerceAtLeast(0L))
                         .put("rating", cursor.getInt(idxRating).coerceIn(0, 5))
                         .put("is_reread", if (cursor.getInt(idxIsReread) != 0) 1 else 0)
+                        .put("profile_id", cursor.getString(idxProfile).orEmpty())
+                        .put("source_id", cursor.getString(idxSourceId).orEmpty())
+                        .put("remote_id", cursor.getString(idxRemoteId).orEmpty())
+                        .put("session_key", cursor.getString(idxSessionKey).orEmpty())
+                        .put("chapter_id", cursor.getString(idxChapterId).orEmpty())
                 )
             }
         }
@@ -4118,11 +5182,12 @@ class SauceTrackerDatabase(
         db: SQLiteDatabase,
         subscriptions: JSONArray?,
         seenCodes: JSONArray?,
-        events: JSONArray?
+        events: JSONArray?,
+        defaultProfileId: String,
+        replaceAllProfiles: Boolean
     ): SubscriptionImportCounts {
-        db.delete("subscription_events", null, null)
-        db.delete("subscription_seen_codes", null, null)
-        db.delete("subscriptions", null, null)
+        if (replaceAllProfiles) db.delete("subscriptions", null, null)
+        else db.delete("subscriptions", "profile_id=?", arrayOf(defaultProfileId))
 
         if (subscriptions == null && seenCodes == null && events == null) {
             return SubscriptionImportCounts(0, 0, 0)
@@ -4133,11 +5198,12 @@ class SauceTrackerDatabase(
         var importedSeenCodes = 0
         var importedEvents = 0
 
-        fun ensureSubscription(routeTypeRaw: String, routeNameRaw: String): Long? {
+        fun ensureSubscription(routeTypeRaw: String, routeNameRaw: String, profileId: String, sourceId: String): Long? {
             val routeType = normalizeSubscriptionRouteType(routeTypeRaw)
             val routeName = normalizeSubscriptionRouteName(routeType, routeNameRaw)
-            val routeKey = subscriptionRouteKey(routeType, routeName)
-            if (routeType.isBlank() || routeName.isBlank() || routeKey.isBlank()) return null
+            val logicalRouteKey = subscriptionRouteKey(routeType, routeName)
+            if (routeType.isBlank() || routeName.isBlank() || logicalRouteKey.isBlank()) return null
+            val routeKey = "$profileId|$sourceId|$logicalRouteKey"
             routeIdByKey[routeKey]?.let { return it }
             val existing = findSubscriptionByKey(routeKey)
             if (existing != null) {
@@ -4148,6 +5214,8 @@ class SauceTrackerDatabase(
                 put("route_name", routeName)
                 put("route_type", routeType)
                 put("route_key", routeKey)
+                put("profile_id", profileId)
+                put("source_id", sourceId)
                 put("created_at", utcNowString())
             }
             val rowId = db.insertWithOnConflict("subscriptions", null, values, SQLiteDatabase.CONFLICT_IGNORE)
@@ -4162,7 +5230,7 @@ class SauceTrackerDatabase(
             val obj = subscriptions?.optJSONObject(idx) ?: continue
             val routeType = obj.optString("route_type", "")
             val routeName = obj.optString("route_name", "")
-            val subscriptionId = ensureSubscription(routeType, routeName) ?: continue
+            val subscriptionId = ensureSubscription(routeType, routeName, obj.optString("profile_id", defaultProfileId).ifBlank { defaultProfileId }, obj.optString("source_id", "nhentai").ifBlank { "nhentai" }) ?: continue
             val values = ContentValues().apply {
                 put("notifications_enabled", if (obj.optInt("notifications_enabled", 1) != 0) 1 else 0)
                 put("notification_dot_enabled", if (obj.optInt("notification_dot_enabled", 1) != 0) 1 else 0)
@@ -4178,7 +5246,9 @@ class SauceTrackerDatabase(
             val obj = seenCodes?.optJSONObject(idx) ?: continue
             val subscriptionId = ensureSubscription(
                 obj.optString("route_type", ""),
-                obj.optString("route_name", "")
+                obj.optString("route_name", ""),
+                obj.optString("profile_id", defaultProfileId).ifBlank { defaultProfileId },
+                obj.optString("source_id", "nhentai").ifBlank { "nhentai" }
             ) ?: continue
             val code = obj.optInt("code", 0).coerceAtLeast(0)
             if (code <= 0) continue
@@ -4195,7 +5265,9 @@ class SauceTrackerDatabase(
             val obj = events?.optJSONObject(idx) ?: continue
             val subscriptionId = ensureSubscription(
                 obj.optString("route_type", ""),
-                obj.optString("route_name", "")
+                obj.optString("route_name", ""),
+                obj.optString("profile_id", defaultProfileId).ifBlank { defaultProfileId },
+                obj.optString("source_id", "nhentai").ifBlank { "nhentai" }
             ) ?: continue
             val code = obj.optInt("code", 0).coerceAtLeast(0)
             if (code <= 0) continue
@@ -4257,9 +5329,12 @@ class SauceTrackerDatabase(
 
     private fun replaceReadingSessionsFromSnapshot(
         db: SQLiteDatabase,
-        rows: JSONArray
+        rows: JSONArray,
+        defaultProfileId: String,
+        replaceAllProfiles: Boolean
     ): Int {
-        db.delete("reading_sessions", null, null)
+        if (replaceAllProfiles) db.delete("reading_sessions", null, null)
+        else db.delete("reading_sessions", "profile_id=?", arrayOf(defaultProfileId))
         var imported = 0
         for (idx in 0 until rows.length()) {
             val obj = rows.optJSONObject(idx) ?: continue
@@ -4268,7 +5343,9 @@ class SauceTrackerDatabase(
                 is String -> raw.trim().toIntOrNull() ?: 0
                 else -> obj.optInt("entry_code", 0)
             }.coerceAtLeast(0)
-            if (entryCode <= 0) continue
+            val sourceId = obj.optString("source_id", "nhentai").ifBlank { "nhentai" }
+            val remoteId = obj.optString("remote_id", entryCode.toString()).ifBlank { entryCode.toString() }
+            if ((sourceId == "nhentai" && entryCode <= 0) || remoteId.isBlank() || remoteId == "0") continue
 
             val startedAtRaw = obj.optString("started_at", "").trim()
             val endedAtRaw = obj.optString("ended_at", "").trim()
@@ -4311,9 +5388,14 @@ class SauceTrackerDatabase(
                 put("seconds_elapsed", secondsElapsed)
                 put("rating", rating)
                 put("is_reread", if (isReread) 1 else 0)
+                put("profile_id", obj.optString("profile_id", defaultProfileId).ifBlank { defaultProfileId })
+                put("source_id", sourceId)
+                put("remote_id", remoteId)
+                put("chapter_id", obj.optString("chapter_id", "").trim())
+                val identitySeed = "$sourceId|$remoteId|$startedAt|$endedAt|$entryCode|$pagesViewed|$secondsElapsed|$isReread"
+                put("session_key", obj.optString("session_key").ifBlank { UUID.nameUUIDFromBytes(identitySeed.toByteArray(Charsets.UTF_8)).toString() })
             }
-            db.insert("reading_sessions", null, values)
-            imported += 1
+            if (db.insertWithOnConflict("reading_sessions", null, values, SQLiteDatabase.CONFLICT_IGNORE) != -1L) imported += 1
         }
         return imported
     }
@@ -4358,8 +5440,17 @@ class SauceTrackerDatabase(
         subscriptionSeenCodes: JSONArray? = null,
         subscriptionEvents: JSONArray? = null,
         dailyReadActivity: JSONArray? = null,
-        readingSessions: JSONArray? = null
+        readingSessions: JSONArray? = null,
+        sourcePlatform: JSONObject? = null,
+        sourcePlatformProfileId: String? = null,
+        targetProfileId: String = ProfileStore(this).activeProfileId()
     ): ImportResult {
+        sourcePlatform?.let { SourcePlatformBackup.validate(it.toString()) }
+        BackupHistoryValidation.validateOwners(sourcePlatform?.toString(), listOf(
+            readingSessions?.toString(), subscriptions?.toString(),
+            subscriptionSeenCodes?.toString(), subscriptionEvents?.toString()
+        ))
+        val restoreProfileId = RestoreProfileRouting.targetProfileId(sourcePlatform != null, sourcePlatformProfileId, targetProfileId)
         val db = writableDatabase
         val now = utcNowString()
 
@@ -4388,6 +5479,9 @@ class SauceTrackerDatabase(
         var importedSubscriptionEventRows: Int? = null
         var importedDailyReadActivityRows: Int? = null
         var importedReadingSessionRows: Int? = null
+        val importedProfileStates = linkedMapOf<Int, ContentValues>()
+        val writeLegacyPersonalState = (sourcePlatform != null && sourcePlatformProfileId == null) ||
+            sourcePlatform == null
 
         db.beginTransaction()
         try {
@@ -4429,6 +5523,10 @@ class SauceTrackerDatabase(
                 val pinned = if (obj.optInt("pinned", 0) != 0) 1 else 0
                 val mediaId = parseMediaId(obj.opt("media_id"))
                 val coverExt = parseCoverExtension(obj.optString("cover_ext", ""))
+                importedProfileStates[code] = ContentValues().apply {
+                    put("read_state", readState); put("rating", rating); put("pinned", pinned)
+                    put("read_at", readAt); put("added_at", addedAt); put("fetched_at", fetchedAt)
+                }
 
                 val exists = entryExists(db, code)
 
@@ -4439,14 +5537,14 @@ class SauceTrackerDatabase(
                         put("source_url", sourceUrl)
                         put("num_pages", numPages)
                         put("upload_date", uploadDate)
-                        put("rating", rating)
-                        if (hasReadState || rating > 0) {
+                        if (writeLegacyPersonalState) put("rating", rating)
+                        if (writeLegacyPersonalState && (hasReadState || rating > 0)) {
                             put("read_state", readState)
                             put("read_at", readAt)
-                        } else if (rawReadAt.isNotBlank()) {
+                        } else if (writeLegacyPersonalState && rawReadAt.isNotBlank()) {
                             put("read_at", readAt)
                         }
-                        if (hasPinned) {
+                        if (writeLegacyPersonalState && hasPinned) {
                             put("pinned", pinned)
                         }
                         put("fetched_at", fetchedAt)
@@ -4463,10 +5561,10 @@ class SauceTrackerDatabase(
                         put("source_url", sourceUrl)
                         put("num_pages", numPages)
                         put("upload_date", uploadDate)
-                        put("rating", rating)
-                        put("read_state", readState)
-                        put("read_at", readAt)
-                        put("pinned", pinned)
+                        put("rating", if (writeLegacyPersonalState) rating else 0)
+                        put("read_state", if (writeLegacyPersonalState) readState else 0)
+                        put("read_at", if (writeLegacyPersonalState) readAt else "")
+                        put("pinned", if (writeLegacyPersonalState) pinned else 0)
                         put("fetched_at", fetchedAt)
                         put("added_at", addedAt)
                         put("media_id", mediaId)
@@ -4607,14 +5705,16 @@ class SauceTrackerDatabase(
                     db = db,
                     subscriptions = subscriptions,
                     seenCodes = subscriptionSeenCodes,
-                    events = subscriptionEvents
+                    events = subscriptionEvents,
+                    defaultProfileId = restoreProfileId,
+                    replaceAllProfiles = sourcePlatform != null && sourcePlatformProfileId == null
                 )
                 importedSubscriptionRows = importedSubscriptionCounts.subscriptions
                 importedSubscriptionSeenRows = importedSubscriptionCounts.seenCodes
                 importedSubscriptionEventRows = importedSubscriptionCounts.events
             }
 
-            if (dailyReadActivity != null) {
+            if (dailyReadActivity != null && ((sourcePlatform != null && sourcePlatformProfileId == null) || restoreProfileId == ProfileStore.MAIN_PROFILE_ID)) {
                 importedDailyReadActivityRows = replaceDailyReadActivityFromSnapshot(
                     db = db,
                     rows = dailyReadActivity
@@ -4623,8 +5723,26 @@ class SauceTrackerDatabase(
             if (readingSessions != null) {
                 importedReadingSessionRows = replaceReadingSessionsFromSnapshot(
                     db = db,
-                    rows = readingSessions
+                    rows = readingSessions,
+                    defaultProfileId = restoreProfileId,
+                    replaceAllProfiles = sourcePlatform != null && sourcePlatformProfileId == null
                 )
+            }
+            if (sourcePlatform != null) {
+                if (sourcePlatformProfileId == null) restoreSourcePlatformSnapshot(db, sourcePlatform)
+                else mergeSourcePlatformProfileSnapshot(db, sourcePlatform, sourcePlatformProfileId)
+            } else {
+                ensureV2Schema(db)
+                val validTarget = restoreProfileId
+                importedProfileStates.forEach { (code, state) ->
+                    val sourceEntryId = db.rawQuery("SELECT id FROM source_entries WHERE source_id='nhentai' AND remote_id=?", arrayOf(code.toString())).use { cursor -> if (cursor.moveToFirst()) cursor.getLong(0) else null }
+                        ?: return@forEach
+                    db.insertWithOnConflict("profile_entries", null, ContentValues(state).apply { put("profile_id", validTarget); put("source_entry_id", sourceEntryId) }, SQLiteDatabase.CONFLICT_IGNORE)
+                    db.update("profile_entries", state, "profile_id=? AND source_entry_id=?", arrayOf(validTarget, sourceEntryId.toString()))
+                    if (validTarget != ProfileStore.MAIN_PROFILE_ID && code in insertedCodes) {
+                        db.delete("profile_entries", "profile_id=? AND source_entry_id=?", arrayOf(ProfileStore.MAIN_PROFILE_ID, sourceEntryId.toString()))
+                    }
+                }
             }
 
             cleanupOrphanTags(db)
@@ -4803,6 +5921,177 @@ class SauceTrackerDatabase(
         }
     }
 
+    private fun mergeSourcePlatformProfileSnapshot(db: SQLiteDatabase, snapshot: JSONObject, profileId: String) {
+        require(snapshot.optInt("schema_version", 0) in 2..5) { "Unsupported source platform backup schema." }
+        val profileRows = snapshot.optJSONArray("profiles") ?: JSONArray()
+        val profileRow = (0 until profileRows.length()).asSequence().mapNotNull(profileRows::optJSONObject)
+            .firstOrNull { it.optString("id") == profileId } ?: error("Selected profile is missing from the backup.")
+        val selectedMemberships = snapshot.optJSONArray("profile_entries") ?: JSONArray()
+        val membershipRows = (0 until selectedMemberships.length()).mapNotNull(selectedMemberships::optJSONObject).filter { it.optString("profile_id") == profileId }
+        val backupEntryIds = membershipRows.map { it.optLong("source_entry_id", -1L) }.filter { it >= 0L }.toSet()
+        val selectedSourceKeys = linkedSetOf<Pair<String, String>>()
+        val sourceRows = snapshot.optJSONArray("sources") ?: JSONArray()
+        for (index in 0 until sourceRows.length()) {
+            val row = sourceRows.optJSONObject(index) ?: continue
+            db.insertWithOnConflict("sources", null, ContentValues().apply {
+                put("id", row.optString("id")); put("display_name", row.optString("display_name")); put("adapter_version", row.optInt("adapter_version", 1)); put("enabled", row.optInt("enabled", 1))
+            }, SQLiteDatabase.CONFLICT_REPLACE)
+        }
+
+        val currentProfileExists = db.rawQuery("SELECT 1 FROM profiles WHERE id=?", arrayOf(profileId)).use { it.moveToFirst() }
+        val profileValues = ContentValues().apply {
+            put("name", profileRow.optString("name").ifBlank { "Restored profile" }); put("kind", profileRow.optString("kind").ifBlank { "COMBINED" })
+            put("created_at", profileRow.optString("created_at")); put("last_used_at", profileRow.optString("last_used_at"));
+            put("is_main", if (profileId == ProfileStore.MAIN_PROFILE_ID) 1 else profileRow.optInt("is_main", 0))
+        }
+        if (currentProfileExists) db.update("profiles", profileValues, "id=?", arrayOf(profileId))
+        else db.insertOrThrow("profiles", null, ContentValues(profileValues).apply { put("id", profileId) })
+
+        db.delete("profile_entry_local_tags", "profile_id=?", arrayOf(profileId))
+        db.delete("profile_entries", "profile_id=?", arrayOf(profileId))
+        db.delete("profile_preferences", "profile_id=?", arrayOf(profileId))
+        db.delete("profile_sources", "profile_id=?", arrayOf(profileId))
+        val profileSources = snapshot.optJSONArray("profile_sources") ?: JSONArray()
+        for (index in 0 until profileSources.length()) {
+            val row = profileSources.optJSONObject(index) ?: continue
+            if (row.optString("profile_id") != profileId) continue
+            db.insertWithOnConflict("profile_sources", null, ContentValues().apply { put("profile_id", profileId); put("source_id", row.optString("source_id")) }, SQLiteDatabase.CONFLICT_IGNORE)
+        }
+
+        val backupToCurrentId = linkedMapOf<Long, Long>()
+        val sourceEntriesRows = snapshot.optJSONArray("source_entries") ?: JSONArray()
+        for (index in 0 until sourceEntriesRows.length()) {
+            val row = sourceEntriesRows.optJSONObject(index) ?: continue
+            val backupId = row.optLong("id", -1L)
+            if (backupId !in backupEntryIds) continue
+            val sourceId = row.optString("source_id"); val remoteId = row.optString("remote_id")
+            selectedSourceKeys += sourceId to remoteId
+            val currentId = db.rawQuery("SELECT id FROM source_entries WHERE source_id=? AND remote_id=?", arrayOf(sourceId, remoteId)).use { cursor -> if (cursor.moveToFirst()) cursor.getLong(0) else null }
+            val values = ContentValues().apply {
+                put("source_id", sourceId); put("remote_id", remoteId)
+                if (row.isNull("legacy_code")) putNull("legacy_code") else put("legacy_code", row.optLong("legacy_code"))
+                listOf("title", "alternate_titles", "canonical_url", "thumbnail_url", "unit_label", "published_at", "status", "fetched_at", "provider_revision", "source_payload").forEach { put(it, row.optString(it)) }
+                put("unit_count", row.optInt("unit_count", 0))
+            }
+            val resolvedId = if (currentId == null) db.insertOrThrow("source_entries", null, values) else { db.update("source_entries", values, "id=?", arrayOf(currentId.toString())); currentId }
+            backupToCurrentId[backupId] = resolvedId
+        }
+
+        fun restoreEntryChildren(table: String, rowsName: String, columns: List<String>) {
+            val rows = snapshot.optJSONArray(rowsName) ?: JSONArray()
+            backupToCurrentId.values.forEach { db.delete(table, "source_entry_id=?", arrayOf(it.toString())) }
+            for (index in 0 until rows.length()) {
+                val row = rows.optJSONObject(index) ?: continue
+                val currentId = backupToCurrentId[row.optLong("source_entry_id", -1L)] ?: continue
+                db.insertWithOnConflict(table, null, ContentValues().apply {
+                    put("source_entry_id", currentId); columns.forEach { put(it, row.optString(it)) }
+                }, SQLiteDatabase.CONFLICT_REPLACE)
+            }
+        }
+        restoreEntryChildren("source_entry_tags", "source_entry_tags", listOf("name", "type", "normalized_name", "remote_id"))
+        restoreEntryChildren("source_entry_creators", "source_entry_creators", listOf("name", "type", "normalized_name", "remote_id", "source_url"))
+
+        membershipRows.forEach { row ->
+            val currentId = backupToCurrentId[row.optLong("source_entry_id", -1L)] ?: return@forEach
+            db.insertOrThrow("profile_entries", null, ContentValues().apply {
+                put("profile_id", profileId); put("source_entry_id", currentId); put("read_state", row.optInt("read_state")); put("rating", row.optInt("rating")); put("pinned", row.optInt("pinned"));
+                put("pin_priority", row.optInt("pin_priority")); put("read_at", row.optString("read_at")); put("added_at", row.optString("added_at")); put("fetched_at", row.optString("fetched_at"))
+            })
+        }
+        val localTags = snapshot.optJSONArray("profile_entry_local_tags") ?: JSONArray()
+        for (index in 0 until localTags.length()) {
+            val row = localTags.optJSONObject(index) ?: continue
+            if (row.optString("profile_id") != profileId) continue
+            val currentId = backupToCurrentId[row.optLong("source_entry_id", -1L)] ?: continue
+            db.insertWithOnConflict("profile_entry_local_tags", null, ContentValues().apply {
+                put("profile_id", profileId); put("source_entry_id", currentId); put("name", row.optString("name")); put("normalized_name", row.optString("normalized_name"))
+            }, SQLiteDatabase.CONFLICT_REPLACE)
+        }
+        val preferences = snapshot.optJSONArray("profile_preferences") ?: JSONArray()
+        for (index in 0 until preferences.length()) {
+            val row = preferences.optJSONObject(index) ?: continue
+            if (row.optString("profile_id") != profileId) continue
+            db.insertWithOnConflict("profile_preferences", null, ContentValues().apply {
+                put("profile_id", profileId); put("preference_key", row.optString("preference_key")); put("value_json", row.optString("value_json")); put("updated_at", row.optString("updated_at"))
+            }, SQLiteDatabase.CONFLICT_REPLACE)
+        }
+        db.delete("source_reader_progress", "profile_id=?", arrayOf(profileId))
+        val readerProgress = snapshot.optJSONArray("source_reader_progress") ?: JSONArray()
+        for (index in 0 until readerProgress.length()) {
+            val row = readerProgress.optJSONObject(index) ?: continue
+            if (row.optString("profile_id") != profileId) continue
+            db.insertWithOnConflict("source_reader_progress", null, ContentValues().apply {
+                put("profile_id", profileId)
+                put("source_id", row.optString("source_id"))
+                put("remote_id", row.optString("remote_id"))
+                put("chapter_id", row.optString("chapter_id"))
+                put("page_index", row.optInt("page_index", 0).coerceAtLeast(0))
+                put("updated_at", row.optString("updated_at"))
+            }, SQLiteDatabase.CONFLICT_REPLACE)
+        }
+        db.delete("source_chapter_progress", "profile_id=?", arrayOf(profileId))
+        val chapterProgress = snapshot.optJSONArray("source_chapter_progress") ?: JSONArray()
+        for (index in 0 until chapterProgress.length()) {
+            val row = chapterProgress.optJSONObject(index) ?: continue
+            if (row.optString("profile_id") != profileId) continue
+            db.insertWithOnConflict("source_chapter_progress", null, ContentValues().apply {
+                put("profile_id", profileId); put("source_id", row.optString("source_id")); put("remote_id", row.optString("remote_id"))
+                put("chapter_id", row.optString("chapter_id")); put("furthest_page_index", row.optInt("furthest_page_index"))
+                put("page_count", row.optInt("page_count")); put("completed", row.optInt("completed")); put("completed_at", row.optString("completed_at")); put("updated_at", row.optString("updated_at"))
+            }, SQLiteDatabase.CONFLICT_REPLACE)
+        }
+        selectedSourceKeys.forEach { (sourceId, remoteId) ->
+            db.delete("source_chapter_cache", "source_id=? AND remote_id=?", arrayOf(sourceId, remoteId))
+        }
+        val chapterCache = snapshot.optJSONArray("source_chapter_cache") ?: JSONArray()
+        for (index in 0 until chapterCache.length()) {
+            val row = chapterCache.optJSONObject(index) ?: continue
+            val sourceId = row.optString("source_id")
+            val remoteId = row.optString("remote_id")
+            if ((sourceId to remoteId) !in selectedSourceKeys) continue
+            db.insertWithOnConflict("source_chapter_cache", null, ContentValues().apply {
+                put("source_id", sourceId); put("remote_id", remoteId)
+                put("chapter_count", row.optInt("chapter_count", 0).coerceAtLeast(0))
+                put("payload_json", row.optString("payload_json"))
+                put("fetched_at_epoch_ms", row.optLong("fetched_at_epoch_ms", 0L).coerceAtLeast(0L))
+            }, SQLiteDatabase.CONFLICT_REPLACE)
+        }
+        rebuildSourceTerms(db)
+        require((ProfileStore(this).profile(profileId)?.sourceIds?.isNotEmpty() == true)) { "Restored profile has no valid sources." }
+    }
+
+    private fun restoreSourcePlatformSnapshot(db: SQLiteDatabase, snapshot: JSONObject) {
+        val snapshotSchema = snapshot.optInt("schema_version", 0)
+        require(snapshotSchema in 2..5) { "Unsupported source platform backup schema." }
+        val definitions = SourcePlatformBackup.columns
+        SourcePlatformBackup.deleteOrder.forEach { db.delete(it, null, null) }
+        definitions.forEach { (table, columns) ->
+            val rows = snapshot.optJSONArray(table) ?: JSONArray()
+            for (index in 0 until rows.length()) {
+                val row = rows.optJSONObject(index) ?: continue
+                val values = ContentValues()
+                columns.forEach { column ->
+                    if (column == "completed_at" && !row.has(column)) values.put(column, "")
+                    else if (!row.has(column) || row.isNull(column)) values.putNull(column)
+                    else when (val value = row.get(column)) {
+                        is Int -> values.put(column, value)
+                        is Long -> values.put(column, value)
+                        is Number -> values.put(column, value.toDouble())
+                        else -> values.put(column, value.toString())
+                    }
+                }
+                db.insertOrThrow(table, null, values)
+            }
+        }
+        rebuildSourceTerms(db)
+        require(ProfileStore(this).profiles().isNotEmpty()) { "Backup contains no valid profiles." }
+    }
+
+    private fun rebuildSourceTerms(db: SQLiteDatabase) {
+        db.execSQL("INSERT OR IGNORE INTO source_terms(kind,type,normalized_name,display_name) SELECT 'tag',type,normalized_name,name FROM source_entry_tags WHERE normalized_name<>''")
+        db.execSQL("INSERT OR IGNORE INTO source_terms(kind,type,normalized_name,display_name) SELECT 'creator','creator',normalized_name,name FROM source_entry_creators WHERE normalized_name<>''")
+    }
+
     fun findTagId(type: String, name: String): Long? {
         val normalizedType = type.trim().lowercase(Locale.US)
         val normalizedName = normalizeTagName(name)
@@ -4812,6 +6101,7 @@ class SauceTrackerDatabase(
 
     fun getTagRouteRef(tagId: Long): TagRouteRef? {
         if (tagId <= 0L) return null
+        SourceEntryStore(this).termRef(tagId)?.let { return it }
         readableDatabase.rawQuery(
             "SELECT name, type FROM tags WHERE id = ? LIMIT 1",
             arrayOf(tagId.toString())

@@ -441,7 +441,7 @@ internal fun DashboardSuggestionsSection(
                                                         verticalArrangement = Arrangement.spacedBy(5.dp)
                                                     ) {
                                                         Text(
-                                                            text = "#${suggestion.code}",
+                                                            text = if (suggestion.sourceId == "nhentai") "#${suggestion.remoteId}" else "MangaDex",
                                                             style = MaterialTheme.typography.labelMedium,
                                                             color = MaterialTheme.colorScheme.primary,
                                                             fontWeight = FontWeight.SemiBold
@@ -454,7 +454,7 @@ internal fun DashboardSuggestionsSection(
                                                             overflow = TextOverflow.Ellipsis
                                                         )
                                                         Text(
-                                                            text = "${suggestion.numPages} pages  •  ${suggestion.uploadDate.ifBlank { "Unknown date" }}",
+                                                            text = "${suggestion.numPages} ${suggestion.unitLabel}  •  ${suggestion.uploadDate.ifBlank { "Unknown date" }}",
                                                             style = MaterialTheme.typography.bodySmall,
                                                             color = MaterialTheme.colorScheme.onSurfaceVariant
                                                         )

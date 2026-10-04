@@ -39,7 +39,8 @@ internal fun buildSuggestionSearchQuery(
     ): String {
         val tokens = mutableListOf<String>()
         includeCreators.forEach { creator ->
-            val type = creator.type.trim().lowercase(Locale.US).ifBlank { "artist" }
+            // This query is sent through the NHentai conveyor; authors map to its artist field.
+            val type = creator.type.trim().lowercase(Locale.US).ifBlank { "artist" }.let { if (it == "author") "artist" else it }
             tokens += "$type:${toSuggestionQueryTerm(creator.name)}"
         }
         includeTags.forEach { tag ->
@@ -137,7 +138,7 @@ internal fun buildSuggestionProfile(
             val name = normalizeTagName(rawKey.substring(separator + 1))
             if (name.isBlank() || name in blockedTags || name in IGNORED_SUGGESTION_TAG_NAMES) return@forEach
             val adjustment = rawAdjustment.coerceIn(-2.25f, 2.25f)
-            if (type == "artist" || type == "group") {
+            if (type == "artist" || type == "author" || type == "group") {
                 creatorWeights[name] = ((creatorWeights[name] ?: 0f) + adjustment).coerceIn(-12f, 24f)
                 creatorTypeByName.putIfAbsent(name, type)
             } else {

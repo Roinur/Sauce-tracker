@@ -33,8 +33,13 @@ data class SuggestedEntryRow(
     val topTags: List<String>,
     val score: Float,
     val whySuggestedReason: String = "",
-    val duplicateHint: DuplicateHint? = null
+    val duplicateHint: DuplicateHint? = null,
+    val sourceId: String = "nhentai",
+    val remoteId: String = code.toString(),
+    val unitLabel: String = "pages"
 )
+
+data class RestoreProfileOption(val id: String, val name: String)
 
 internal data class SuggestedDuplicateComparisonState(
     val suggestion: SuggestedEntryRow,
@@ -180,7 +185,10 @@ data class SubscriptionEventRow(
     val sourceUrl: String,
     val discoveredAt: String,
     val dismissed: Boolean,
-    val pinned: Boolean
+    val pinned: Boolean,
+    val profileId: String = "main",
+    val sourceId: String = "nhentai",
+    val remoteId: String = code.toString()
 )
 
 data class SearchFieldFilter(
@@ -207,7 +215,8 @@ data class ParsedImportPayload(
     val dailyReadActivity: JSONArray? = null,
     val readingSessions: JSONArray? = null,
     val entryPinPriorityEnabled: Boolean? = null,
-    val portablePreferences: JSONObject? = null
+    val portablePreferences: JSONObject? = null,
+    val sourcePlatform: JSONObject? = null
 )
 
 data class HiddenSuggestedEntryState(

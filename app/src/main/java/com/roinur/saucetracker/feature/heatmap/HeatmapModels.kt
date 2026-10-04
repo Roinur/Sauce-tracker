@@ -38,7 +38,9 @@ data class TagGraphEntrySeed(
     val rating: Int,
     val isRead: Boolean,
     val pinned: Boolean,
-    val tagNames: List<String>
+    val tagNames: List<String>,
+    val sourceId: String = "nhentai",
+    val remoteId: String = code.toString()
 )
 
 data class TagGraphNode(
@@ -78,7 +80,9 @@ data class TagGraphEntryNode(
     val boundaryCenterY: Float,
     val boundaryRadiusPx: Float,
     val x: Float,
-    val y: Float
+    val y: Float,
+    val sourceId: String = "nhentai",
+    val remoteId: String = code.toString()
 )
 
 data class TagGraphEntryFamilyCircle(
@@ -145,6 +149,8 @@ internal fun tagGraphEntryLayoutCacheKey(snapshot: TagGraphSnapshot): String {
     }
     snapshot.entryNodes.forEach { entry ->
         hash = (hash * 31) + entry.code
+        hash = (hash * 31) + entry.sourceId.hashCode()
+        hash = (hash * 31) + entry.remoteId.hashCode()
         hash = (hash * 31) + entry.tagNames.size
         entry.tagNames.forEach { tag ->
             hash = (hash * 31) + tag.hashCode()

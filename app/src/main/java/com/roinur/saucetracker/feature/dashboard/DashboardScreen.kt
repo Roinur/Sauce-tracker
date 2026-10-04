@@ -401,7 +401,11 @@ internal fun DashboardScreen(vm: DashboardViewModel) {
             } else {
                 fallbackScheme
             }
-            applyAccentMode(baseScheme, uiState.accentMode, useDark)
+            applyAccentMode(
+                com.roinur.saucetracker.core.ui.theme.applyExtraDarkMode(baseScheme, useDark, uiState.extraDark),
+                uiState.accentMode,
+                useDark
+            )
         }
     }
 

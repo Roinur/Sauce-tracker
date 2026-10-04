@@ -39,7 +39,7 @@ internal val CREATOR_TYPED_INPUT_PATTERN = Regex("(?i)^(artist|group)\\s*:\\s*(.
 internal val CREATOR_NAME_LINE_PATTERN = Regex("^[\\p{L}\\p{N} _.'()\\-]{2,80}$")
 internal const val URL_TRAILING_PUNCT = ".,;:!?)]}"
 internal val SEARCH_FIELD_PATTERN = Regex(
-    "(?i)\\b(code|title|subtitle|pages?|num pages|upload(?: date)?|rating|fetched(?: at)?|added(?: at)?|url|source(?: url)?|link|anytagid|excludetagid|anytag|excludetag|tags?|artist|group|parody|character|category|language|lang|type)\\s*:\\s*"
+    "(?i)\\b(code|title|subtitle|pages?|chapters?|status|num pages|upload(?: date)?|rating|fetched(?: at)?|added(?: at)?|url|source(?: url)?|link|anytagid|excludetagid|anytag|excludetag|tags?|artist|author|group|parody|character|category|language|lang|type)\\s*:\\s*"
 )
 internal val DATE_TOKEN_PATTERN = Regex("\\d{4}-\\d{2}-\\d{2}")
 internal val POPULAR_TAG_ANCHOR_PATTERN = Regex(
@@ -189,7 +189,7 @@ enum class SuggestionWeightCategory(
     CHARACTER("character", "Character", setOf("character")),
     CATEGORY("category", "Category", setOf("category")),
     LANGUAGE("language", "Language", setOf("language")),
-    CREATOR("creator", "Artist / Group", setOf("artist", "group")),
+    CREATOR("creator", "Artist / Author / Group", setOf("artist", "author", "group")),
     OTHER("other", "Other", emptySet());
 
     companion object {
@@ -273,8 +273,15 @@ data class EntryDetail(
     val fetchedAt: String,
     val addedAt: String,
     val thumbnailUrl: String,
-    val tagsByType: Map<String, List<String>>
-)
+    val tagsByType: Map<String, List<String>>,
+    val sourceId: String = "nhentai",
+    val remoteId: String = code.toString(),
+    val unitLabel: String = "pages",
+    val remoteStatus: String = ""
+) {
+    val isNhentai: Boolean get() = sourceId == "nhentai"
+    val displayId: String get() = if (isNhentai) code.toString() else remoteId
+}
 
 data class BrowserLibraryStateRow(
     val code: Int,
@@ -379,7 +386,11 @@ data class DayReadEntryRow(
     val pagesViewed: Int,
     val secondsElapsed: Long,
     val sessionCount: Int,
-    val isReread: Boolean
+    val chapterCount: Int = 0,
+    val isReread: Boolean,
+    val sourceId: String = "nhentai",
+    val remoteId: String = code.toString(),
+    val unitLabel: String = "pages"
 )
 
 data class ReadingSpeedStats(
@@ -404,8 +415,9 @@ data class ReadAnalyticsSnapshot(
 
 data class ReadCountBreakdown(
     val uniqueEntries: Int = 0,
+    val chaptersRead: Int = 0,
     val rereads: Int = 0
 ) {
     val total: Int
-        get() = uniqueEntries + rereads
+        get() = uniqueEntries + chaptersRead + rereads
 }

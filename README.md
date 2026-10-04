@@ -1,15 +1,15 @@
 <h1 align="center">Sauce Tracker</h1>
 
 <p align="center">
-  A private, local-first Android library for organizing, exploring, and revisiting gallery metadata.
+  A private, local-first Android library and reader for NHentai and MangaDex.
 </p>
 
 <p align="center">
-  Library&nbsp;&nbsp;•&nbsp;&nbsp;Browser&nbsp;&nbsp;•&nbsp;&nbsp;History&nbsp;&nbsp;•&nbsp;&nbsp;Heatmaps&nbsp;&nbsp;•&nbsp;&nbsp;Backups
+  Multi-source library&nbsp;&nbsp;•&nbsp;&nbsp;Profiles&nbsp;&nbsp;•&nbsp;&nbsp;History&nbsp;&nbsp;•&nbsp;&nbsp;Desktop Bridge&nbsp;&nbsp;•&nbsp;&nbsp;Backups
 </p>
 
 <p align="center">
-  <img alt="Release 1.9" src="https://img.shields.io/badge/release-1.9-8f9cff">
+  <img alt="Release 2.0" src="https://img.shields.io/badge/release-2.0-8f9cff">
   <img alt="Android 8.0+" src="https://img.shields.io/badge/Android-8.0%2B-3ddc84">
   <img alt="Kotlin and Compose" src="https://img.shields.io/badge/Kotlin-Compose-7f52ff">
   <img alt="Local first" src="https://img.shields.io/badge/data-local--first-4c9aff">
@@ -20,6 +20,65 @@
 </p>
 
 Sauce Tracker combines a searchable library, an integrated browser, reading history, recommendations, subscriptions, downloads, backups, and interactive tag and entry heatmaps in one on-device app.
+
+## What is new in 2.0
+
+**A generation change, not just another provider.** NHentai and MangaDex now share
+the polished Entries, Selected Entry, Browser and Slideshow systems, while profiles
+keep your personal state separate. The rebuilt Desktop Bridge is an all-in-one
+reading surface, not merely a remote-control page.
+
+| Area | What changes in 2.0 |
+|---|---|
+| **Two first-class sources** | Source-aware identity, translated search/tags/creators, real covers, language-specific manga entries and capability-aware actions. |
+| **Independent profiles** | Locked NHentai/MangaDex defaults, optional combined profiles, hold-gear switching, searchable copy/move and separate ratings, history, training and subscriptions. |
+| **Chapter reading** | Volume-cover chapter lists, oldest/newest order, exact-page resume, saved-chapter list focus, seamless adjacent chapters and progress shimmer. |
+| **Desktop Bridge rebuilt** | Dashboard, paginated library, internal Browser/Reader, History, Trends, Heatmaps, suggestions and phone-synchronized Material You accents. |
+| **Sharing and captures** | QR packages of 1–10 entries, raw-page capture from the reader and Library's entry-filtered Saved: Screenshots gallery. |
+| **Intelligence connected** | MangaDex data participates in existing recommendations, training, presets, trends, heatmaps and meaningful day/series History. |
+| **Performance and polish** | Shared thumbnail/network pipelines, cached chapter metadata, bounded reader prefetch, new accent-aware icons and optional Extra dark. |
+| **Safer data** | Validated transactional 1.9 migration, V2 profile/source backups, V1 compatibility, isolated Verified Restore and healthy preserved browser-only history. |
+
+This summary is only the overview. The [complete 2.0 release tour](docs/releases/2.0.md)
+covers the full feature list, interaction changes, performance work, compatibility
+and limitations. [CHANGELOG.md](CHANGELOG.md) records the implementation-level history.
+
+> [!IMPORTANT]
+> A fresh install or 1.9 upgrade creates **NHentai** and **MangaDex** source-locked
+> profiles, not a combined Main profile. Existing 1.9 data goes to NHentai, which
+> opens first. Create a combined profile yourself if you want both sources together.
+> Old V1 exports restore into NHentai; debug profiles are not automatically copied
+> into the release app. See [migration and recovery](docs/SAUCE_TRACKER_2.0_MIGRATION.md).
+
+2.0 backups use `SAUCE_TRACKER_EXPORT_V2`; `NH_TAGBOOK_EXPORT_V1` remains supported.
+V2 backups are not guaranteed to restore in 1.9. MangaDex full offline chapter
+downloads and the in-app Version Museum are **not included** in 2.0. The museum
+implementation is retained for a later release; no cloud sync, remote relay or
+full offline PWA is introduced.
+
+### Provider capabilities
+
+| Capability | NHentai | MangaDex |
+|---|---:|---:|
+| Search, detail, import, refresh | Yes | Yes |
+| Browse/feed and creator navigation | Yes | Yes |
+| Reader and subscriptions | Yes | Yes |
+| Full offline downloads | Yes | Not included; chapter reading uses the network |
+| Comments and page overview | Yes | Hidden |
+
+Only NHentai and MangaDex are officially supported in 2.0. The source contract is
+intentionally extensible, but it is not a promise of other providers. Provider and
+device QA evidence, with remaining manual coverage, is recorded in
+[the release checklist](TEST_CHECKLIST_2.0.md).
+
+### Desktop Bridge browser-window setup
+
+1. Start Desktop Bridge on the phone and keep Sauce Tracker open on the same local network.
+2. Open the current HTTPS URL shown by the phone, accept the installation-specific self-signed certificate, and complete the phone challenge.
+3. Use Chrome/Edge's site-app installation or open-as-window shortcut command where your browser offers it. A normal tab remains supported.
+4. If the phone's IP changes, use the new URL shown on the phone and recreate the shortcut. There is no service worker, offline cache, cloud relay or full PWA in 2.0.
+
+Bridge responses use `Cache-Control: no-store`; private library state is cleared from the page when it becomes hidden or disconnected. Only harmless layout preferences may use persistent browser storage.
 
 > [!IMPORTANT]
 > Sauce Tracker can display links and metadata for adult material. It is intended only for adults where such content is legal. The project is independent and is not affiliated with or endorsed by the website it accesses.
@@ -223,12 +282,14 @@ Version 1.9 adds deeper local trend analysis, explicit recommendation training, 
     <tr><td>1.7</td><td>Architecture and reliability: the structured rewrite, Selected Entry relationships, rolling backups, resilient Browser state, and bounded Heatmap thumbnails.</td></tr>
     <tr><td>1.8</td><td>Large-library discovery: Sauce Finder, persistent and faster suggestions, dashboard ordering, package migration, privacy tooling, and deeper feature extraction.</td></tr>
     <tr><td>1.9</td><td>Local intelligence: Reading Trends, Unique Trends, Train your model, Tag Presets, Library Health, and Verified Restore diagnostics.</td></tr>
+    <tr><td>2.0</td><td>A multi-source generation: first-class MangaDex and NHentai, independent profiles, chapter reading/resume, rebuilt all-in-one Desktop Bridge, QR sharing, raw-page captures and stronger migration/backup safety.</td></tr>
   </table>
 
   Historical APKs are preserved as museum builds in GitHub Releases. Versions 1.0 through 1.7 use the former `com.example.saucetracker` identity; versions 1.8 and newer use `com.roinur.saucetracker`. Older builds may contain obsolete network behavior and database schemas, so export current data before experimenting with them.
 </details>
 
-See [CHANGELOG.md](CHANGELOG.md) for the detailed 1.7 through 1.9 history and each GitHub Release for its reconstructed period notes.
+The website timeline is separate from the deferred in-app Version Museum.
+See [CHANGELOG.md](CHANGELOG.md) for the detailed 1.7 through 2.0 history and each GitHub Release for its period notes.
 
 ## Features
 
@@ -264,16 +325,26 @@ See [CHANGELOG.md](CHANGELOG.md) for the detailed 1.7 through 1.9 history and ea
 
 ## Download and install
 
-Download `Sauce-Tracker-1.9-release.apk` and its checksum from the [latest GitHub Release](../../releases/latest).
+Download `Sauce-Tracker-2.0-release.apk` and its checksum from the
+[Sauce Tracker 2.0 release](https://github.com/Roinur/Sauce-tracker/releases/tag/v2.0.0).
 
 Android 8.0 (API 26) or newer is required.
 
-Version 1.8 introduced the current `com.roinur.saucetracker` Android identity, which 1.9 updates in place. Android installs it beside older builds that used the former package. When migrating from that former package, create a fresh export in the old app, import it into the current app, reselect Android document folders, and verify the result before uninstalling the old app.
+2.0 updates the official 1.9 release in place using the same package and signing
+identity. **Export first, install over the existing app, and do not uninstall it.**
+Migration preserves existing data in the NHentai profile and adds an empty MangaDex
+profile. Debug remains a separate installation. Do not downgrade the migrated
+database by installing 1.9 over 2.0; keep your original V1 export as a recovery point.
+
+Version 1.8 introduced `com.roinur.saucetracker`. Android installs this package
+beside still older builds using the former identity. For those builds, export in
+the old app, import into the current one, reselect document folders and verify
+before uninstalling the former app.
 
 To install with ADB:
 
 ```powershell
-adb install -r Sauce-Tracker-1.9-release.apk
+adb install -r Sauce-Tracker-2.0-release.apk
 ```
 
 Android may require permission to install apps from the file manager or browser used to open the APK. Back up important library data before replacing an older or differently signed build.
@@ -332,8 +403,8 @@ The package root is `com.roinur.saucetracker`. The modular layout keeps feature-
 
 Official releases should include:
 
-- `Sauce-Tracker-1.9-release.apk`
-- `Sauce-Tracker-1.9-release.apk.sha256`
+- `Sauce-Tracker-2.0-release.apk`
+- `Sauce-Tracker-2.0-release.apk.sha256`
 - release notes matching [CHANGELOG.md](CHANGELOG.md)
 
 Verify the checksum before sideloading when the APK was downloaded through a third party.

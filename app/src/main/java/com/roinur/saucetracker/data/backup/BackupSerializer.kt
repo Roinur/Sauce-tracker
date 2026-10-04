@@ -317,7 +317,7 @@ import kotlin.math.sin
 import kotlin.math.sqrt
 import kotlin.math.roundToInt
 internal const val EXPORT_PREFIX = "Sauce exported Date"
-internal const val EXPORT_FORMAT = "NH_TAGBOOK_EXPORT_V1"
+internal const val EXPORT_FORMAT = "SAUCE_TRACKER_EXPORT_V2"
 
 internal object BackupSerializer {
     fun serialize(snapshot: JSONObject): String {

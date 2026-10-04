@@ -2,6 +2,15 @@ package com.roinur.saucetracker.background
 
 import com.roinur.saucetracker.core.network.TemporaryWebsiteException
 import com.roinur.saucetracker.data.database.SauceTrackerDatabase
+import com.roinur.saucetracker.data.source.SourceException
+import com.roinur.saucetracker.data.source.SourceFailureKind
+import com.roinur.saucetracker.data.source.SourceId
+import com.roinur.saucetracker.data.source.SourceQuery
+import com.roinur.saucetracker.data.source.SourceQueryField
+import com.roinur.saucetracker.data.source.SourceQueryTerm
+import com.roinur.saucetracker.data.source.SourceRegistry
+import com.roinur.saucetracker.data.source.SourceSortMode
+import com.roinur.saucetracker.data.source.uiCode
 
 import com.roinur.saucetracker.*
 
@@ -33,6 +42,8 @@ private const val SUBSCRIPTION_NOTIFICATION_CHANNEL_ID = "subscription_updates"
 private const val SUBSCRIPTION_NOTIFICATION_ID = 12041
 private const val SUBSCRIPTION_ROUTE_FETCH_PAGES = 2
 internal const val EXTRA_OPEN_SUBSCRIPTIONS = "extra_open_subscriptions"
+internal const val EXTRA_SUBSCRIPTION_PROFILE_ID = "extra_subscription_profile_id"
+internal const val EXTRA_SUBSCRIPTION_SOURCE_ID = "extra_subscription_source_id"
 
 internal fun syncSubscriptionBackgroundWork(
     context: Context,
@@ -68,6 +79,7 @@ internal fun syncSubscriptionNotificationSummaryForContext(
 ) {
     val notificationCount = db.countSubscriptionEventsForNotification()
     val badgeCount = db.countSubscriptionEventsForBadge()
+    val newestEvent = db.listSubscriptionEvents(includeDismissed = false, profileId = null).firstOrNull()
     if (notificationCount <= 0 && badgeCount <= 0) {
         NotificationManagerCompat.from(appContext).cancel(SUBSCRIPTION_NOTIFICATION_ID)
         return
@@ -95,6 +107,10 @@ internal fun syncSubscriptionNotificationSummaryForContext(
                 Intent(appContext, MainActivity::class.java).apply {
                     action = "com.roinur.saucetracker.OPEN_SUBSCRIPTIONS"
                     putExtra(EXTRA_OPEN_SUBSCRIPTIONS, true)
+                    newestEvent?.let { event ->
+                        putExtra(EXTRA_SUBSCRIPTION_PROFILE_ID, event.profileId)
+                        putExtra(EXTRA_SUBSCRIPTION_SOURCE_ID, event.sourceId)
+                    }
                     addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
                 },
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
@@ -136,7 +152,7 @@ class SubscriptionRefreshWorker(
 ) : CoroutineWorker(appContext, params) {
     override suspend fun doWork(): Result {
         val db = SauceTrackerDatabase(applicationContext)
-        val subscriptions = db.listSubscriptions()
+        val subscriptions = db.listSubscriptions(profileId = null)
         if (subscriptions.isEmpty()) {
             syncSubscriptionNotificationSummaryForContext(applicationContext, db)
             return Result.success()
@@ -144,10 +160,49 @@ class SubscriptionRefreshWorker(
 
         val suggestionApi = SuggestionApiClient()
         val client = NhentaiApiClient()
+        val sourceRegistry = SourceRegistry.createDefault()
         var hadTemporaryFailure = false
 
         subscriptions.forEach { subscription ->
             try {
+                if (subscription.sourceId != "nhentai") {
+                    val sourceId = SourceId(subscription.sourceId)
+                    val field = when (subscription.routeType) {
+                        "tag" -> SourceQueryField.TAG
+                        "artist" -> SourceQueryField.ARTIST
+                        "author" -> SourceQueryField.AUTHOR
+                        "group" -> SourceQueryField.GROUP
+                        "character" -> SourceQueryField.CHARACTER
+                        "parody" -> SourceQueryField.PARODY
+                        "language" -> SourceQueryField.LANGUAGE
+                        "category" -> SourceQueryField.CATEGORY
+                        else -> null
+                    }
+                    if (field == null) {
+                        db.markSubscriptionChecked(subscription.id)
+                        return@forEach
+                    }
+                    val entries = sourceRegistry.requireAdapter(sourceId).search(
+                        SourceQuery(
+                            terms = listOf(SourceQueryTerm(field, subscription.routeName)),
+                            sort = SourceSortMode.RECENT
+                        ),
+                        offset = 0,
+                        limit = 24
+                    ).entries
+                    val codes = entries.map { it.key.uiCode() }
+                    if (!subscription.initialized) {
+                        if (codes.isNotEmpty()) db.addSeenCodesForSubscription(subscription.id, codes)
+                        db.markSubscriptionInitialized(subscription.id)
+                        return@forEach
+                    }
+                    val seenCodes = db.listSeenCodesForSubscription(subscription.id)
+                    val unseenEntries = entries.filter { it.key.uiCode() !in seenCodes }.take(24)
+                    db.insertSourceSubscriptionEvents(subscription.id, unseenEntries)
+                    if (codes.isNotEmpty()) db.addSeenCodesForSubscription(subscription.id, codes)
+                    db.markSubscriptionChecked(subscription.id)
+                    return@forEach
+                }
                 val codes = suggestionApi.fetchDirectRouteCodes(
                     routeType = subscription.routeType,
                     routeName = subscription.routeName,
@@ -192,6 +247,15 @@ class SubscriptionRefreshWorker(
                 db.markSubscriptionChecked(subscription.id)
             } catch (_: TemporaryWebsiteException) {
                 hadTemporaryFailure = true
+            } catch (error: SourceException) {
+                if (error.kind == SourceFailureKind.OFFLINE ||
+                    error.kind == SourceFailureKind.RATE_LIMITED ||
+                    error.kind == SourceFailureKind.TEMPORARY
+                ) {
+                    hadTemporaryFailure = true
+                } else {
+                    db.markSubscriptionChecked(subscription.id)
+                }
             } catch (_: Exception) {
                 db.markSubscriptionChecked(subscription.id)
             }

@@ -329,8 +329,15 @@ internal fun ModernTagsPage(
     onOpenPresets: () -> Unit,
     onSortByName: () -> Unit,
     onSortByType: () -> Unit,
-    onSortByCount: () -> Unit
+    onSortByCount: () -> Unit,
+    canSubscribe: (TagCountRow) -> Boolean = { true }
 ) {
+    val sourceTags = tags
+        .filter { it.type.equals("source", ignoreCase = true) }
+        .sortedBy { tag -> when (tag.name.lowercase()) { "nhentai" -> 0; "mangadex" -> 1; else -> 2 } }
+    val regularTags = tags.filterNot { it.type.equals("source", ignoreCase = true) }
+    val orderedTags = sourceTags + regularTags
+    val firstRegularTagId = regularTags.firstOrNull()?.id
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -403,12 +410,20 @@ internal fun ModernTagsPage(
                         .heightIn(min = 240.dp, max = 720.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    items(tags, key = { it.id }) { tag ->
+                    items(orderedTags, key = { it.id }) { tag ->
                         val selected = tag.id in selectedIds
                         val subscribed = isSubscribed(tag)
                         val rowShape = RoundedCornerShape(16.dp)
                         val accent = tagAccentColor(tag.type, tag.name)
                         val bellInteraction = remember(tag.id) { MutableInteractionSource() }
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            if (sourceTags.isNotEmpty() && tag.id == firstRegularTagId) {
+                                HorizontalDivider(
+                                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f),
+                                    thickness = 1.dp,
+                                    modifier = Modifier.padding(horizontal = 12.dp)
+                                )
+                            }
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -437,10 +452,10 @@ internal fun ModernTagsPage(
                                     ),
                                 contentAlignment = Alignment.Center
                             ) {
-                                Text(
-                                    if (selected) "◆" else "◇",
-                                    color = accent,
-                                    fontWeight = FontWeight.Black
+                                DashboardMetricGlyphIcon(
+                                    glyph = DashboardMetricGlyph.TAGS,
+                                    modifier = Modifier.size(27.dp),
+                                    color = accent
                                 )
                             }
                             Column(modifier = Modifier.weight(1f)) {
@@ -474,40 +489,34 @@ internal fun ModernTagsPage(
                                 style = MaterialTheme.typography.labelMedium,
                                     fontWeight = FontWeight.Bold
                             )
-                            Box(
-                                modifier = Modifier
-                                    .size(40.dp)
-                                    .clip(CircleShape)
-                                    .combinedClickable(
-                                        enabled = !incognitoModeEnabled,
-                                        interactionSource = bellInteraction,
-                                        indication = rememberRipple(bounded = true, radius = 20.dp),
-                                        onClick = { onToggleSubscription(tag) },
-                                        onLongClick = { onConfigureSubscription(tag) }
-                                    ),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    painter = painterResource(
-                                        id = if (subscribed) {
-                                            R.drawable.ic_notifications_24
-                                        } else {
-                                            R.drawable.ic_notifications_none_24
-                                        }
-                                    ),
-                                    contentDescription = if (subscribed) {
-                                        "Subscribed to ${tag.name}"
-                                    } else {
-                                        "Subscribe to ${tag.name}"
-                                    },
-                                    tint = if (subscribed) {
-                                        MaterialTheme.colorScheme.primary
-                                    } else {
-                                        MaterialTheme.colorScheme.onSurfaceVariant
-                                    },
-                                    modifier = Modifier.size(20.dp)
-                                )
+                            if (!tag.type.equals("source", ignoreCase = true) && canSubscribe(tag)) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(40.dp)
+                                        .clip(CircleShape)
+                                        .combinedClickable(
+                                            enabled = !incognitoModeEnabled,
+                                            interactionSource = bellInteraction,
+                                            indication = rememberRipple(bounded = true, radius = 20.dp),
+                                            onClick = { onToggleSubscription(tag) },
+                                            onLongClick = { onConfigureSubscription(tag) }
+                                        ),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        painter = painterResource(
+                                            id = if (subscribed) R.drawable.ic_notifications_24
+                                            else R.drawable.ic_notifications_none_24
+                                        ),
+                                        contentDescription = if (subscribed) "Subscribed to ${tag.name}"
+                                        else "Subscribe to ${tag.name}",
+                                        tint = if (subscribed) MaterialTheme.colorScheme.primary
+                                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
                             }
+                        }
                         }
                     }
                 }

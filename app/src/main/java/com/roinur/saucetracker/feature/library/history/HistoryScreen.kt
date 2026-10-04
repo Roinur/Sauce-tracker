@@ -340,14 +340,14 @@ internal fun ReadingHistoryPreviewPanel(
                 .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.16f), RoundedCornerShape(12.dp)),
             contentAlignment = Alignment.Center
         ) {
-            Text("↻", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Black)
+            DashboardMetricGlyphIcon(DashboardMetricGlyph.HISTORY, Modifier.size(25.dp))
         }
         Text("History", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
         if (analyticsLoading && monthReads == 0 && monthPages == 0) {
             EntryDetailSkeletonLines(compactContent = true, alpha = 0.5f)
         } else {
             Text(
-                text = "$monthReads reads",
+                text = monthReads.toString(),
                 style = MaterialTheme.typography.headlineSmall,
                 fontWeight = FontWeight.Black,
                 maxLines = 1,
@@ -423,7 +423,7 @@ internal fun ReadingHistoryPage(
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text(
-                        text = "${day.entriesRead} entr${if (day.entriesRead == 1) "y" else "ies"} read • ${day.pagesRead} page${if (day.pagesRead == 1) "" else "s"}",
+                        text = "${day.entriesRead} read${if (day.entriesRead == 1) "" else "s"} • ${day.pagesRead} page${if (day.pagesRead == 1) "" else "s"}",
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     if (selectedDayEntriesLoading) {
@@ -868,7 +868,7 @@ internal fun DayReadEntriesDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(
-                    text = "${day.entriesRead} entr${if (day.entriesRead == 1) "y" else "ies"} read • ${day.pagesRead} page${if (day.pagesRead == 1) "" else "s"}",
+                    text = "${day.entriesRead} read${if (day.entriesRead == 1) "" else "s"} • ${day.pagesRead} page${if (day.pagesRead == 1) "" else "s"}",
                     modifier = Modifier.privacyObfuscate(
                         enabled = incognitoModeEnabled,
                         overlayColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = INCOGNITO_OVERLAY_ALPHA)
@@ -978,6 +978,9 @@ private fun ReadingBreakdownDialog(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 ReadingBreakdownRow("Unique entries", breakdown.uniqueEntries, obscure)
+                if (breakdown.chaptersRead > 0) {
+                    ReadingBreakdownRow("Chapters read", breakdown.chaptersRead, obscure)
+                }
                 ReadingBreakdownRow("Re-reads", breakdown.rereads, obscure)
                 androidx.compose.material3.HorizontalDivider(
                     color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
@@ -1044,7 +1047,7 @@ internal fun DayReadEntryCard(
                 ThumbnailImage(
                     thumbnailUrl = entry.thumbnailUrl,
                     backupCode = entry.code,
-                    contentDescription = "Cover for code ${entry.code}",
+                    contentDescription = "Cover for ${entry.sourceId} ${entry.remoteId}",
                     obscure = incognitoModeEnabled,
                     modifier = Modifier
                         .width(46.dp)
@@ -1075,7 +1078,7 @@ internal fun DayReadEntryCard(
                 verticalArrangement = Arrangement.spacedBy(3.dp)
             ) {
                 Text(
-                    text = entry.title.ifBlank { "#${entry.code}" },
+                    text = entry.title.ifBlank { "${entry.sourceId}:${entry.remoteId}" },
                     modifier = Modifier.privacyObfuscate(
                         enabled = incognitoModeEnabled,
                         overlayColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = INCOGNITO_OVERLAY_ALPHA)
@@ -1086,7 +1089,7 @@ internal fun DayReadEntryCard(
                     overflow = TextOverflow.Ellipsis
                 )
                 Text(
-                    text = "#${entry.code}",
+                    text = if (entry.sourceId == "nhentai") "#${entry.remoteId}" else entry.sourceId.replaceFirstChar { it.uppercase() },
                     modifier = Modifier.privacyObfuscate(
                         enabled = incognitoModeEnabled,
                         overlayColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = INCOGNITO_OVERLAY_ALPHA)
@@ -1110,8 +1113,12 @@ internal fun DayReadEntryCard(
                     }
                 }
                 val detailBits = buildList {
-                    if (entry.sessionCount > 0) add("${entry.sessionCount} session${if (entry.sessionCount == 1) "" else "s"}")
-                    if (entry.pagesViewed > 0) add("${entry.pagesViewed} pages")
+                    if (entry.chapterCount > 0) {
+                        add("${entry.chapterCount} chapter${if (entry.chapterCount == 1) "" else "s"}")
+                    } else if (entry.sessionCount > 0) {
+                        add("${entry.sessionCount} session${if (entry.sessionCount == 1) "" else "s"}")
+                    }
+                    if (entry.pagesViewed > 0) add("${entry.pagesViewed} ${entry.unitLabel}")
                     if (entry.secondsElapsed > 0L) add(formatDurationFromSeconds(entry.secondsElapsed))
                 }
                 Text(

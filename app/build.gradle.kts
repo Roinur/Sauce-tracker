@@ -1,4 +1,5 @@
 import java.util.Properties
+import org.gradle.api.tasks.Sync
 
 plugins {
     id("com.android.application")
@@ -36,8 +37,8 @@ android {
         applicationId = "com.roinur.saucetracker"
         minSdk = 26
         targetSdk = 34
-        versionCode = 13
-        versionName = "1.9"
+        versionCode = 14
+        versionName = "2.0"
         ndk {
             abiFilters += listOf("arm64-v8a")
         }
@@ -100,6 +101,9 @@ android {
         compose = true
     }
 
+    // Version Museum deferred beyond 2.0; do not package its screenshots.
+    // sourceSets.getByName("main").assets.srcDir(layout.buildDirectory.dir("generated/versionMuseumAssets"))
+
     composeOptions {
         kotlinCompilerExtensionVersion = "1.5.14"
     }
@@ -113,6 +117,24 @@ android {
         }
     }
 }
+
+/* Version Museum assets deferred beyond 2.0. Retain the task for later.
+val generateVersionMuseumAssets by tasks.registering(Sync::class) {
+    from(rootProject.file("docs/screenshots")) {
+        include(
+            "dashboard-home.png", "entries-page.png", "tags-page.png", "artists-page.png",
+            "browser-page.png", "browser-selected-entry.png", "data-settings.png",
+            "suggested-entries.png", "entries-incognito.png",
+            "preview-1.8/dashboard-dark.png", "preview-1.8/reader-vertical.png",
+            "preview-1.9/reading-trends-insight.png", "preview-1.9/train-your-model.png",
+            "preview-1.9/tag-presets.png"
+        )
+    }
+    into(layout.buildDirectory.dir("generated/versionMuseumAssets"))
+}
+
+tasks.named("preBuild").configure { dependsOn(generateVersionMuseumAssets) }
+*/
 
 dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2024.06.00")
@@ -132,6 +154,7 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.1")
     implementation("org.bouncycastle:bcpkix-jdk18on:1.85")
+    implementation("com.google.zxing:core:3.5.3")
 
     testImplementation("junit:junit:4.13.2")
 

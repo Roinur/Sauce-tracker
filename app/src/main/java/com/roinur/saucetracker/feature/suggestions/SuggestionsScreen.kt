@@ -714,14 +714,14 @@ internal fun RandomEntryPreviewDialog(
                         ) {
                             ThumbnailImage(
                                 thumbnailUrl = entry.thumbnailUrl,
-                                backupCode = entry.code,
+                                backupCode = entry.code.takeIf { entry.isNhentai },
                                 contentDescription = entry.title,
                                 obscure = incognitoModeEnabled,
                                 modifier = Modifier.fillMaxSize()
                             )
                         }
                         Text(
-                            "#${entry.code}  ${entry.title}",
+                            "${if (entry.isNhentai) "#${entry.code}" else entry.sourceId.replaceFirstChar { it.uppercase() }}  ${entry.title}",
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .privacyObfuscate(
@@ -773,13 +773,13 @@ internal fun ModernEntryThumb(
     ) {
         ThumbnailImage(
             thumbnailUrl = entry.thumbnailUrl,
-            backupCode = entry.code,
+            backupCode = entry.code.takeIf { entry.isNhentai },
             contentDescription = entry.title,
             obscure = incognitoModeEnabled,
             modifier = Modifier.fillMaxSize()
         )
         Text(
-            text = "#${entry.code}",
+            text = if (entry.isNhentai) "#${entry.code}" else entry.sourceId.replaceFirstChar { it.uppercase() },
             style = MaterialTheme.typography.labelSmall,
             color = Color.White,
             maxLines = 1,

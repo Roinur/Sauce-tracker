@@ -324,7 +324,7 @@ internal fun suggestionTagTypeWeight(type: String): Float {
         "character" -> 0.34f
         "category" -> 0.24f
         "language" -> 0.42f
-        "artist", "group" -> 0f
+        "artist", "author", "group" -> 0f
         else -> 0.28f
     }
 }
@@ -396,12 +396,12 @@ internal fun scoreSuggestionCandidate(
             return SuggestionScoreBreakdown(score = 0f, rankedTags = emptyList(), whySuggestedReason = "")
         }
         val type = tag.type.trim().lowercase(Locale.US)
-        val exactTagScore = if (type == "artist" || type == "group") {
+        val exactTagScore = if (type == "artist" || type == "author" || type == "group") {
             0f
         } else {
             tagWeights[normalized] ?: 0f
         }
-        val creatorScore = if (type == "artist" || type == "group") {
+        val creatorScore = if (type == "artist" || type == "author" || type == "group") {
             creatorWeights[normalized] ?: 0f
         } else {
             0f

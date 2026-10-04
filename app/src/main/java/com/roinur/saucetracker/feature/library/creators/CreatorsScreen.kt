@@ -332,7 +332,8 @@ internal fun ModernCreatorsPage(
     expandedEntryContent: @Composable (Int) -> Unit,
     onSortByName: () -> Unit,
     onSortByType: () -> Unit,
-    onSortByCount: () -> Unit
+    onSortByCount: () -> Unit,
+    canSubscribe: (CreatorRow) -> Boolean = { true }
 ) {
     Column(
         modifier = Modifier
@@ -425,7 +426,11 @@ internal fun ModernCreatorsPage(
                                         ),
                                     contentAlignment = Alignment.Center
                                 ) {
-                                    Text("♚", color = accent, fontWeight = FontWeight.Black)
+                                    DashboardMetricGlyphIcon(
+                                        glyph = DashboardMetricGlyph.ARTISTS,
+                                        modifier = Modifier.size(27.dp),
+                                        color = accent
+                                    )
                                 }
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(
@@ -456,7 +461,7 @@ internal fun ModernCreatorsPage(
                                     fontWeight = FontWeight.Bold
                                 )
                                 Text(if (expanded) "▲" else "▼", color = MaterialTheme.colorScheme.primary)
-                                Box(
+                                if (canSubscribe(creator)) Box(
                                     modifier = Modifier
                                         .size(40.dp)
                                         .clip(CircleShape)

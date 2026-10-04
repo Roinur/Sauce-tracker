@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#11131d">
+  <title>Sauce Tracker Desktop Bridge</title>
+  <link rel="icon" href="/app-icon.png">
+  <link rel="stylesheet" href="/bridge.css">
+  <link rel="stylesheet" href="/reader.css">
+</head>
+<body>
+  <div id="unlock" class="unlock-layer">
+    <section class="unlock-card"><img class="brand-mark" src="/app-icon.png" alt=""><h1>Unlock Desktop Bridge</h1><p>Choose the code shown on your phone.</p><div id="choices" class="choices"></div><p id="unlock-status" class="muted"></p></section>
+  </div>
+  <main id="app" class="bridge-shell private locked">
+    <aside class="sidebar">
+      <div class="brand"><img class="brand-mark" src="/app-icon.png" alt="Sauce Tracker"><div><strong>Sauce Tracker</strong><span>Desktop Bridge</span></div></div>
+      <nav id="views" class="side-nav" aria-label="Bridge pages">
+        <button data-view="dashboard"><span data-icon="entries"></span>Dashboard</button>
+        <button data-view="library" class="active"><span data-icon="entries"></span>Library</button>
+        <button data-view="browser"><span data-icon="browser"></span>Browser</button>
+        <button data-view="tags"><span data-icon="tags"></span>Tags</button>
+        <button data-view="creators"><span data-icon="artists"></span>Artists / Groups</button>
+        <hr>
+        <button data-view="history"><span data-icon="history"></span>History</button>
+        <button data-view="suggestions"><span data-icon="suggestions"></span>Suggestions</button>
+        <button data-view="trends"><span data-icon="heatmap"></span>Heatmap / Trends</button>
+      </nav>
+      <div class="sidebar-footer">
+        <button id="theme" class="side-control"><span>☼</span><b>Theme</b><em>Auto</em></button>
+        <div class="accent-control"><button id="accent" class="side-control"><span>◉</span><b>Accent color</b><i class="accent-dot"></i></button><div id="accent-menu" class="accent-menu hidden" role="menu" aria-label="Accent color"></div></div>
+        <button id="blackout" class="side-control"><span>▣</span><b>Screen</b><em>On</em></button>
+        <div class="connection"><span>▣</span><div><small id="security">TLS-only compatibility mode</small><small id="synced">Waiting for sync</small></div></div>
+      </div>
+    </aside>
+    <section class="workspace">
+      <header class="topbar">
+        <div class="page-heading"><h1 id="page-title">Library</h1><span id="entry-count">0 entries</span></div>
+        <div class="global-search"><span>⌕</span><input id="search" placeholder="Search or paste a URL / source ID…" autocomplete="off"><button id="search-button" aria-label="Search">Search</button></div>
+        <div class="top-actions"><button id="refresh" class="icon-button" title="Refresh">↻</button><div class="profile-control"><button id="profile-toggle" class="profile-button" title="Profile"><span id="profile-avatar">?</span></button><div id="profile-menu" class="profile-menu hidden" role="menu"></div></div></div>
+      </header>
+      <nav id="sources" class="source-scope" aria-label="Source scope"></nav>
+      <div class="content-grid">
+        <section class="library-pane">
+          <div id="library-tools" class="library-tools">
+            <div id="read-filters" class="segmented"><button data-filter="all" class="active">All</button><button data-filter="read">Read</button><button data-filter="unread">Unread</button><button data-filter="pinned">Pinned</button></div>
+            <div class="sort-tools"><label>Sort: <select id="sort"><option value="added">Date added</option><option value="title">Title</option><option value="rating">Rating</option></select></label><button id="density" class="active" title="List view">☷</button><button id="grid-density" title="Grid view">▦</button></div>
+          </div>
+          <div id="active-filters" class="active-filters"></div><p id="status" class="status-line"></p>
+          <section id="content"><div id="library" class="entry-list"></div><button id="more" class="load-more" hidden>Load more</button></section>
+          <footer class="pager"><span id="range">0 entries</span><div><button id="previous-page" aria-label="Previous page">‹</button><button id="next-page" aria-label="Next page">›</button></div></footer>
+        </section>
+        <aside id="detail" class="detail-pane empty"><button id="detail-close" class="detail-close" aria-label="Close">×</button><div id="detail-body"><div class="empty-detail"><img src="/app-icon.png" alt=""><strong>Select an entry</strong><p>Details and actions appear here.</p></div></div></aside>
+      </div>
+      <aside class="install-note"><strong>Install as a desktop window</strong><span>After accepting the local certificate, use Chrome “Create shortcut → Open as window” or Edge “Apps → Install this site as an app”. This is not an offline PWA.</span></aside>
+    </section>
+  </main>
+  <section id="reader" class="reader-layer hidden private" aria-label="Slideshow gallery">
+    <header class="reader-bar"><button id="reader-close" class="reader-close">Done</button><div><strong id="reader-title">Reader</strong><span id="reader-chapter"></span></div><div class="reader-actions"><button id="reader-horizontal" class="active" title="Horizontal pages">Horizontal</button><button id="reader-vertical" title="Vertical scroll">Vertical</button></div></header>
+    <div id="reader-stage" class="reader-stage horizontal"><button id="reader-previous" class="reader-nav previous" aria-label="Previous page">‹</button><div id="reader-pages" class="reader-pages"></div><button id="reader-next" class="reader-nav next" aria-label="Next page">›</button><div id="reader-loading" class="reader-loading">Loading page…</div></div>
+    <footer class="reader-footer"><span id="reader-page-count">0 / 0</span><input id="reader-scrubber" type="range" min="1" max="1" value="1" aria-label="Reader page"><button id="reader-chapters">Chapters</button></footer>
+    <aside id="reader-chapter-menu" class="reader-chapter-menu hidden"><header><strong>Chapters</strong><button id="reader-chapter-close" aria-label="Close chapters">×</button></header><div id="reader-chapter-list"></div></aside>
+    <div class="reader-zoom"><button id="reader-zoom-toggle" aria-label="Change page size" title="Page size"><svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5M7.5 10.5h6M10.5 7.5v6"/></svg></button><div id="reader-zoom-panel" class="reader-zoom-panel hidden"><span id="reader-zoom-value">100%</span><input id="reader-zoom-slider" type="range" min="60" max="220" step="10" value="100" aria-label="Page size"></div></div>
+  </section>
+  <section id="rating-modal" class="modal-layer hidden private" role="dialog" aria-modal="true" aria-labelledby="rating-title"><div class="rating-card"><img src="/app-icon.png" alt=""><h2 id="rating-title">What do you rate this sauce?</h2><p id="rating-entry-title" class="muted"></p><div id="rating-stars" class="rating-stars"></div><button id="rating-skip" class="rating-skip">Not now</button></div></section>
+  <script>window.SAUCE_BRIDGE_TOKEN='__SAUCE_TOKEN__';</script><script src="/bridge.js"></script>
+</body>
+</html>

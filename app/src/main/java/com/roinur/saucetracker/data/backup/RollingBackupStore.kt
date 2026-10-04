@@ -16,7 +16,7 @@ private data class ProceduralBackupDocument(
 )
 
 internal fun readCurrentProceduralBackupTextOrNull(context: Context, treeUri: Uri): String? {
-    val rootUri = resolveOrCreateBackupContainerUri(context.applicationContext, treeUri)
+    val rootUri = resolveExistingBackupContainerUri(context.applicationContext, treeUri) ?: return null
     val current = listProceduralBackupDocuments(context, treeUri, rootUri)
         .firstOrNull { it.displayName == PROCEDURAL_BACKUP_CURRENT_FILENAME }
         ?: return null

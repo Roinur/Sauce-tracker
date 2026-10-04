@@ -1,0 +1,889 @@
+SAUCE TRACKER 2.0 - COMPLETE FEATURE CHEAT SHEET
+=================================================
+
+Purpose
+-------
+This is a current-state reference for what Sauce Tracker does. It is organized by
+feature area rather than by release and is not a development changelog.
+
+
+0. SAUCE TRACKER 2.0 PLATFORM
+----------------------------
+
+- Uses (source ID, remote ID) as the stable identity instead of treating one numeric
+  gallery code as globally unique.
+- Officially supports NHentai and MangaDex through the same versioned source-adapter
+  contract; unsupported actions stay hidden according to each adapter's capabilities.
+- Search Everything fans one query out to every source in the active profile, keeps
+  pagination and errors isolated per source, and supports temporary pinned Source tags
+  when the profile contains more than one source.
+- Fresh installs and 1.9 upgrades create two source-locked defaults: NHentai and
+  MangaDex. Old library state belongs to NHentai, which opens first; mixed profiles
+  are created manually. Debug profiles are not automatically transferred to release.
+- Supports source-locked and combined profiles. Remote metadata is shared, while
+  membership, read state, rating, pinning, history, subscriptions, training,
+  presets and recommendation preferences remain profile-specific.
+- Entries can be copied or safely moved between profiles with merge rules, ordinary
+  Search Everything/tag filtering and a validated safety snapshot before profile deletion.
+- Reading History, Reading Trends, Tag/Entry Heatmaps and cross-source suggestions
+  honor the active profile and temporary source scope.
+- MangaDex suggestions reuse the shared taste/profile scorer, creator/author and
+  language weights, explicit training, blocking and preset filters. Mixed profiles
+  balance visible provider results instead of filling every slot with NHentai.
+- Library Search Everything compiles structured fields and preset OR/exclusion rules
+  against shared metadata; full local loading uses bounded pages without a 1,000-entry cap.
+- Train uses active-profile entries and source identities; Re-fetch All updates the
+  active profile/source scope through each provider adapter. Heatmaps need no remote tag fetch.
+- Desktop dashboard exposes scoped counts and recent reading; library filters and sorting
+  operate across the full selected profile before pagination.
+- Desktop recommendations reuse phone scores or the shared profile scorer with saved
+  weights, training and hidden suggestions, without activating a different phone profile.
+- Desktop Bridge 2.0 serves a static, paginated local web client with profile/source
+  APIs, TLS/challenge unlocking, an internal multi-source Browser/slideshow reader and
+  Chrome/Edge browser-window installation guidance.
+- Bridge reader checkpoints preserve active reading time and loaded pages; phone-computed
+  tag/entry heatmaps, raw/rated views and source-aware phone recommendations are available.
+- QR Share generates or imports checksummed packages containing one to ten entries;
+  camera and saved-image scanning both require a preview and explicit approval.
+- QR selection uses searchable library/tag/artist data and the existing browser thumbnails.
+  QR Share and Museum follow Experimental Gallery's theme, accent and rounded surfaces.
+- V2 backup stores sources, profiles, shared entries, profile state, reading progress,
+  sessions and cached MangaDex chapter/volume metadata, while V1 NH_TAGBOOK exports
+  always restore into the NHentai default profile, including history and preferences.
+- Version Museum is deferred beyond 2.0; its implementation and historical manifest
+  are retained but its UI/activity and screenshot packaging are commented out.
+- MangaDex uses the shared slideshow with chapters, resume, per-chapter progress,
+  original-quality raw-page capture and profile-aware subscriptions. MangaDex downloads
+  remain hidden until their complete offline lifecycle is implemented.
+
+
+1. APP-WIDE NAVIGATION AND BEHAVIOR
+-----------------------------------
+
+- Offers two intentionally separate home experiences:
+  - Dashboard: the modern card-and-widget home page.
+  - Legacy Home: the original compact navigation layout.
+- Main destinations include Dashboard/Home, Entries, Tags, Artists / Groups,
+  Suggested Entries, Subscriptions, Heatmap Overview, Reading Trends and History.
+- Tapping the current page title scrolls that page back to the top.
+- Double-tapping the page title toggles Incognito Mode.
+- The theme control cycles between Auto, Light and Dark themes.
+- Long-pressing the theme control opens the accent-color picker.
+- Holding the Settings gear opens compact quick profile switching; full profile
+  management remains inside Settings.
+- Android back navigation unwinds open details, filters, dialogs and app pages in
+  context instead of blindly restarting the app.
+- Reopening the app from its launcher preserves an active Browser task when Android
+  still has that task available.
+- Layout measurements adapt to short, tall, narrow and wide phone screens.
+- Loading, refresh and error states are shown in context instead of replacing valid
+  content unnecessarily.
+
+
+2. SEARCH EVERYTHING AND IMPORT ROUTING
+---------------------------------------
+
+- Search Everything is the common entry point for codes, URLs, titles, metadata,
+  tags, creators and saved tag presets.
+- Recognizes a plain gallery code, #code and supported gallery URLs.
+- Recognizes artist/group routes and typed tag routes.
+- Supports field-aware searches, including:
+  - code:
+  - title:
+  - subtitle:
+  - pages: or num pages:
+  - upload: or upload date:
+  - rating:
+  - fetched: or fetched at:
+  - added: or added at:
+  - url:, source url: or link:
+  - tag:, artist:, group:, parody:, character:, category:, language: or lang:
+  - type:
+- Date-related fields support useful date and date-range matching.
+- A normal text search can remain active while tag filters or a tag preset are active.
+- Recognizes the name of a saved Tag Preset and presents an animated suggestion
+  bubble; tapping it applies the preset from any main app page.
+- The preset suggestion has both an entrance and an exit animation.
+- The clipboard button can paste supported text for importing or opening.
+- Open in Browser routes the current code, URL, search or recognized preset action to
+  the correct destination.
+- Add / Update imports one gallery or refreshes an existing entry.
+- Batch Add / Update reads multiple codes/URLs from a text file.
+- Ambiguous two-word creator searches ask whether the user means an artist or group.
+- Short, split or ambiguous code input is guarded against accidental wrong imports.
+- Search status text and visible-result counts update with the active filter state.
+- Android Share can send an image directly to Sauce Finder.
+
+
+3. DASHBOARD
+------------
+
+- Summary cards show Entries, Tags and Artists / Groups counts.
+- Counts reflect the active library/search/filter scope where appropriate.
+- The discovery widget is a swipeable pager containing:
+  - Suggested Entries.
+  - Random Entries.
+  - Sauce Finder.
+- The insight widget is a swipeable pager containing:
+  - Subscriptions.
+  - Heatmap.
+  - History.
+- Discovery-page and insight-page order can be customized.
+- Long-pressing applicable cards/widgets opens their ordering or customization control.
+- Random Entries shows swipeable local-library previews.
+- Tapping a Random Entry preview opens that exact entry for inspection.
+- Suggested Entries shows persistent recommendation previews.
+- Tapping a Suggested Entry preview navigates to that exact recommendation on the
+  full Suggested Entries page.
+- Sauce Finder can be launched directly from its dashboard page.
+- The Subscriptions page shows the active subscription count and update state.
+- The Heatmap page opens Heatmap Overview / Reading Trends.
+- The History page opens reading history and statistics.
+- Continue where you left off shows recently imported/used entry thumbnails.
+- Dashboard thumbnails use the shared optimized thumbnail loading and cache pipeline.
+- Dashboard scale and spacing adapt so smaller screens remain useful and larger
+  screens do not become a field of empty space.
+
+
+4. LEGACY HOME
+--------------
+
+- Preserves the original home layout as a separate user-selectable interface.
+- Has its own configurable page ordering.
+- Modern Dashboard redesigns are isolated so they do not silently alter Legacy Home.
+- Uses the same underlying library, filters, search, import, privacy and navigation
+  features as Dashboard.
+
+
+5. ENTRIES LIBRARY
+------------------
+
+- Displays every imported library entry matching the current search and tag scope.
+- Provides All, Read, Unread and Downloaded entry filters.
+- The enabled filter cycle is customizable; the first enabled mode becomes the
+  default mode.
+- Search, tag filters, tag presets and Read/Unread/Downloaded state combine.
+- Sorts by Code, Title, Pages, Upload date, Added date, Read state or Rating.
+- Supports ascending and descending sort order.
+- The default Entries sort can be set in Personalization.
+- Supports the standard entry-card layout and a pure gallery layout.
+- Gallery layout has a configurable column count.
+- Thumbnails can be enabled or disabled globally.
+- Reduced Scroll Thumbnails lowers image work during fast scrolling.
+- Shared memory/disk caching and bounded thumbnail loading preserve smooth scrolling.
+- Optional launch preloading warms a chosen percentage of library thumbnails.
+- Swipe one direction to pin/unpin an entry.
+- Swipe the other direction to mark an entry Read/Unread.
+- Swipe backgrounds and animations follow the rounded card shape.
+- Pinned entries receive priority in the library ordering.
+- Tapping an entry expands Selected Entry inline.
+- Direct navigation to a related entry can reveal that entry even when it is hidden by
+  the current search or Read/Unread filter, without destroying the user's filters.
+- Visible/filtered entry counts update atomically with filter results.
+- Read state, rating, download state and pin state are visible on relevant entry UI.
+
+
+6. SELECTED ENTRY / LOCAL ENTRY DETAILS
+---------------------------------------
+
+- Shows gallery code, title and subtitle.
+- Shows a large cover preview.
+- Shows page count and upload date.
+- Expandable Details show fetched time, added time, read time and source URL.
+- MangaDex uses the same expandable Details section as NHentai.
+- MangaDex chapter headers in Library and Browser have a compact oldest/newest sort control;
+  changing list order does not change reader chapter navigation.
+- Library chapter lists open centered on the exact saved resume chapter in either order,
+  without repeatedly snapping back during manual scrolling.
+- Saved: Screenshots under creators opens the existing Experimental Gallery filtered to that entry.
+  This local saved-media link is Library-only; remote Browser details do not show it.
+  New captures retain source/entry/language identity; identifiable older captures remain visible.
+- Open in Browser opens the matching remote gallery detail page.
+- Re-fetch updates the imported metadata from the remote source.
+- Delete removes the entry after confirmation.
+- Pin/Unpin controls library priority.
+- Read/Unread controls local reading state.
+- Rating supports 0 to 5 and can be reset.
+- Rating History shows every recorded reading/rating session.
+- Rating-history rows can be edited or removed individually.
+- Re-read sessions are labeled separately from the original read.
+- Tags are grouped by their metadata type.
+- Artist/group metadata links to the relevant creator view.
+- In Series finds related numbered parts and shows only the adjacent previous and next
+  part when available.
+- Part navigation ignores active search and Read/Unread filters so the requested part
+  always opens.
+- Displays Part X of Y when series position is known.
+- Local More like this finds similar entries already in the user's library.
+- Same artist finds other local entries connected to the same artist.
+- More like this and Same artist respect the current Read/Unread context; Parts does not.
+- Related cards show their own thumbnail, title/code, page count, rating and read state.
+- Related navigation preserves the user's underlying filters and temporarily includes
+  the selected destination if necessary.
+
+
+7. TAGS
+-------
+
+- Dedicated Tags page for imported-library metadata.
+- Shows tags present in the currently filtered entry scope.
+- Tag counts match the active entry search and Read/Unread/Downloaded filters rather
+  than always showing global totals.
+- Supports selecting multiple tags; selected tags combine as an AND filter.
+- Selected tags remain selected while the visible tag list is searched.
+- Sorts by Name, Type or Count, ascending or descending.
+- The default Tags sort can be set in Personalization.
+- Each tag shows its type, color-coded type icon, filtered count and subscription bell.
+- Clear removes the current tag selection.
+- Tapping a tag applies it to the Entries filter.
+- Relevant tag routes can be opened in Browser.
+- Block Tags is kept separate in Settings because blocking controls remote discovery,
+  not the imported-library tag list.
+
+
+8. TAG PRESETS
+--------------
+
+- Creates named, reusable composite filters.
+- Include means every included item is required.
+- Either means at least one item from that group must match.
+- Hide removes entries containing the chosen item.
+- Presets can contain ordinary tags plus artists and groups.
+- Language/category-style metadata is available to normal filtering but is not mixed
+  into manual model-training reasons.
+- Create, edit, delete and reorder presets.
+- Reordering uses the same arrow controls as other Personalization ordering tools.
+- The editor can search available tags and creators.
+- Compact preset summaries show counts for Include, Either and Hide rules.
+- Applying a preset displays its preset name as a chip in the Tag filter area.
+- Ordinary Search Everything text continues to work alongside an applied preset.
+- Searching a preset name in Search Everything offers a one-tap preset suggestion.
+- Duplicate preset definitions are prevented/handled instead of creating ambiguous
+  identical actions.
+- Presets affect filtering only; they never become imported tags or contaminate tag
+  counts, heatmaps or trends.
+- Presets are included in portable backup/import data.
+
+
+9. ARTISTS / GROUPS
+-------------------
+
+- Dedicated combined creator page for Artists and Groups.
+- Search creators by name.
+- Cross-filter creators using the current entry/tag scope.
+- Sort by Name, Type or Count, ascending or descending.
+- The default Artists / Groups sort can be set in Personalization.
+- Expanding a creator shows its linked local entries.
+- Creator counts reflect matching imported entries.
+- Artist/group metadata in Selected Entry can navigate here.
+- Subscription bells subscribe/unsubscribe the remote artist/group route.
+- Creator routes can open directly in Browser.
+- Reading Trends can compare artists/groups without double-counting the same creator
+  merely because it is represented through both artist and group metadata.
+
+
+10. BROWSER HOME AND SEARCH
+---------------------------
+
+- Integrated native Browser for discovering remote galleries.
+- Home feeds include Popular Now and Recently Added.
+- Remote search supports Recent, Popular Today, Popular Week and Popular All Time.
+- Artist/group and other metadata routes support equivalent browse/sort modes where
+  the source supports them.
+- Load More provides paginated browsing.
+- Gallery cards show cover, title/code, pages and upload information.
+- Imported entries are identified without requiring a second lookup screen.
+- Local Read/Unread, rating and pin state are shown and can be changed from Browser.
+- Swiping a Browser card can pin/unpin or mark Read/Unread.
+- A non-imported gallery asks for import before applying local-only state changes.
+- Import/Update is available from Browser.
+- Clipboard content can trigger a contextual import prompt.
+- Blocked-tag rules can be applied to Browser Home and/or combined Search Terms.
+- Browser indicates when blocked-tag filters are being applied.
+- Temporary HTTP failures use bounded retries.
+- Permanent failures such as a true 404 are not pointlessly retried.
+- Offline, HTTP and invalid-response errors are mapped to understandable messages.
+- Browser has its own privacy controller while remaining coordinated with app-wide
+  Incognito Mode.
+
+
+11. BROWSER DUPLICATE DETECTION
+-------------------------------
+
+- Optional remote-gallery duplicate checking.
+- Modes:
+  - Check every update.
+  - Check once per session.
+  - Off.
+- The default duplicate-check mode is configurable in Personalization.
+- Shows checking state and suspected duplicate code.
+- Duplicate comparison presents the imported original and flagged gallery together.
+- Comparison includes page count, upload information, read state and rating where
+  available.
+- A suspected duplicate can be hidden from discovery results.
+- Duplicate state is session-aware so expensive checks are not repeated needlessly.
+
+
+12. BROWSER GALLERY DETAILS
+---------------------------
+
+- Shows remote code, title, page count, upload information and cover.
+- Displays local Read/Unread and Rating controls when the entry is imported.
+- Rating can be reset.
+- Opens the gallery slideshow/reader.
+- Refreshes remote gallery information.
+- Imports a new entry or updates an existing one.
+- Removes an imported entry after confirmation.
+- Shows complete typed metadata sections.
+- Page Overview displays all available page thumbnails.
+- Tapping a page thumbnail opens the slideshow at that exact page.
+- Website More like this shows the remote site's own related recommendations.
+- Remote More like this uses cover, title, page count and direct gallery navigation.
+- Remote More like this is intentionally distinct from Selected Entry's local-library
+  similarity feature.
+- Comments show the commenter's name and the actual comment message.
+- Sensitive title, cover, metadata and comments are masked in privacy modes.
+
+
+13. GALLERY SLIDESHOW / READER
+------------------------------
+
+- Opens both remote Browser galleries and locally downloaded galleries.
+- Supports horizontal page reading.
+- Supports vertical continuous reading with native inertial scrolling.
+- Long-press anywhere opens the reading-direction picker.
+- Horizontal mode supports Western and Manga direction.
+- Switching direction/mode preserves the current page.
+- Tapping the center toggles immersive mode.
+- Page counter and navigation controls follow immersive state.
+- Optional volume-button navigation can be enabled in Settings.
+- Horizontal volume navigation:
+  - Volume Up moves right/forward.
+  - Volume Down moves left/back.
+- Vertical volume navigation:
+  - Volume Up moves up.
+  - Volume Down moves down.
+- When enabled, volume navigation consumes the normal volume action and enters
+  immersive mode until the user exits it.
+- Vertical volume movement uses measured page heights, centers normal pages, aligns
+  the first page to the top and the last page to the bottom.
+- Vertical movement uses a short scroll animation rather than a hard snap.
+- Images are preloaded around the current page.
+- Failed page loads expose Retry without blocking the entire reader.
+- Leaving the reader by Done, system back, explicit exit or an end-of-gallery swipe
+  consistently requests a rating for an imported entry.
+- The rating prompt supports 0-5, Save and Skip.
+- System back acts as Skip; tapping outside cannot accidentally dismiss it.
+- Reading an already-read entry defaults the session to Re-read.
+- A re-read creates a separate history session rather than overwriting the original.
+
+
+14. LOCAL GALLERY DOWNLOADS AND EXPERIMENTAL GALLERY
+----------------------------------------------------
+
+- A gallery-download folder can be selected independently from the backup folder.
+- If no separate folder is selected, downloads can use the configured backup tree.
+- Browser galleries can be downloaded for local/offline reading.
+- Downloaded galleries are available through the Downloaded Entries filter.
+- Local files can be removed without necessarily deleting the imported metadata entry.
+- A gallery can be downloaded again/replaced when local media needs repair.
+- Local slideshow uses the downloaded page source when available.
+- Experimental Gallery provides a dedicated local-gallery inspection/reading path
+  under Settings > Data.
+- Folder access uses Android's document-tree permissions instead of hard-coded paths.
+
+
+15. SUGGESTED ENTRIES
+---------------------
+
+- Finds new remote galleries based on the user's positively rated local library.
+- It is discovery outside the local library, not simply another local More like this.
+- Recommendation modes:
+  - Mixed.
+  - Top tags.
+  - Top creators.
+- Tune controls adjust the influence of:
+  - Length / Pages.
+  - General tags.
+  - Parody.
+  - Character.
+  - Category.
+  - Language.
+  - Artist / Group.
+  - Other metadata.
+- Theme strength controls how strongly the engine follows learned interests.
+- Real languages participate while generic translation metadata is prevented from
+  dominating the recommendation score.
+- A rating of 0 remains neutral rather than being treated as a positive signal.
+- Cached library profiles and candidate/result data avoid rebuilding everything on
+  every visit.
+- Current recommendation results and thumbnail URLs survive app restarts.
+- Refresh keeps the current screen stable while replacement results are prepared.
+- Cancelled refresh work is treated as nonfatal instead of surfacing coroutine errors.
+- Safe relaxation/fallback rules prevent strict tuning from trivially producing an
+  empty screen.
+- Recommendation cards show cover, title/code, pages/date, match score and reasons.
+- Actions include Open, Skip and Import.
+- Hidden/skipped suggestions can be managed and cleared from the related controls.
+- Dashboard preview navigation scrolls to the exact selected recommendation.
+- Recommendation content is hidden/masked in Incognito and GitHub Media Mode.
+
+
+16. TRAIN YOUR MODEL
+--------------------
+
+- Adds a small explicit preference signal to Suggested Entries without replacing the
+  existing rating-based recommendation engine.
+- Presents high-rated and low-rated entries and asks why the user rated them that way.
+- Shows the entry thumbnail and title so the prompt is recognizable.
+- Tapping the thumbnail opens the full Browser entry; returning restores the training
+  prompt in place.
+- Reasons are limited to meaningful ordinary tags, artists and groups.
+- Language, category and generic metadata are excluded from manual training prompts.
+- Complete metadata is resolved from the remote source when possible, with local data
+  as fallback.
+- More than four valid reasons can be shown; the list is not intentionally capped at
+  four.
+- Individual reasons can be selected before saving.
+- Additional choices include Not about metadata and Reason not listed.
+- A long reason list scrolls internally so Skip and Save and next remain reachable.
+- The prompt waits for its data to be complete before presenting the final list,
+  avoiding live jitter while reasons are still arriving.
+- Saved answers can be reviewed.
+- A saved prompt can be removed/requeued for correction.
+- Training data is stored locally and included in portable backup data.
+- GitHub Media Mode masks the thumbnail, title, reason names and review content.
+
+
+17. RANDOM ENTRIES
+------------------
+
+- Selects random entries from the local imported library.
+- Shows multiple swipeable thumbnail previews on Dashboard.
+- Tapping a preview opens that exact entry rather than a new random selection.
+- Random Entries can be moved within the Dashboard discovery-page order.
+- Uses persistent/shared thumbnail caching.
+- Honors privacy masking.
+
+
+18. SAUCE FINDER
+----------------
+
+- Accepts an image selected from the phone.
+- Accepts an image shared to Sauce Tracker from another Android app.
+- Searches only the user's own library, keeping matching private and avoiding remote
+  site-wide scraping.
+- Indexes gallery covers and individual gallery pages.
+- Uses multiple crop-tolerant perceptual hashes per indexed image.
+- Reports the matching entry and page when a convincing result is found.
+- Confidence levels distinguish Strong, Likely and Possible matches.
+- Can show alternative candidates rather than pretending an uncertain match is exact.
+- Opens the matched local entry for verification.
+- The index is a separate SQLite database containing hashes and metadata, not copies
+  of the images.
+- Index building is incremental and resumable.
+- Already indexed entry/page pairs are reused when the library grows.
+- Downloaded local galleries are indexed first.
+- Optional full-library indexing can fetch missing remote pages.
+- Remote indexing uses bounded parallel workers and a small queue to avoid unbounded
+  memory/network load.
+- Progress, indexed image count, indexed entry count and index size are visible.
+- Indexing can be paused/resumed and can continue independently of the visible page.
+- A no-reliable-match result explains that no safe match was found.
+
+
+19. SUBSCRIPTIONS
+-----------------
+
+- Subscribe to tags from the Tags page.
+- Subscribe to artists/groups from the creator page or relevant metadata UI.
+- Dedicated Subscriptions page lists discovered remote updates.
+- Dashboard widget shows the active subscription count.
+- Manual Refresh checks for new galleries immediately.
+- Background WorkManager refresh runs at the configured interval when Android permits.
+- The first initialization records existing route codes without flooding the user with
+  old results.
+- Later checks add only unseen galleries as subscription events.
+- Imported galleries are hidden from the active feed, badge and notification while
+  retained in historical/backup data.
+- Events show thumbnail, title/code, pages, upload/discovery data and source subscription.
+- Events are grouped/associated with the matching subscribed route.
+- Swipe/dismiss controls remove handled events from the visible feed.
+- A subscription can be configured to produce or suppress system notifications.
+- Actionable notifications open the Subscriptions page after app unlock.
+- Seen-code state, subscriptions and event history are included in backup/import.
+- Incognito Mode hides subscription content without deleting it.
+
+
+20. READING HISTORY AND STATISTICS
+----------------------------------
+
+- Time ranges: Today, Week, Month, Year and All Time.
+- User-facing day boundaries follow the phone's local timezone.
+- Raw timestamps remain suitable for stable UTC storage.
+- Reading History total includes every reading session, including re-reads.
+- Tapping the reads total shows the breakdown between unique reads and re-reads.
+- Activity calendar/map visualizes reading across days.
+- Active-day lists can expand to show the individual entries read that day.
+- Day summaries include entry and page totals.
+- History rows show thumbnail/code and identify re-read sessions.
+- Re-reads are counted at the actual time of the re-read, not duplicated at the date of
+  the original read.
+- Per-entry Rating History allows individual session edits/removal.
+- Optional statistics include:
+  - Reads.
+  - Pages read.
+  - Read coverage.
+  - Average rating for read entries.
+  - Top read tags.
+  - Top artists / groups.
+  - Activity map.
+  - Average reading speed in pages per minute.
+  - Total reading time.
+  - Total pages viewed.
+- Statistics can be refreshed without reimporting the library.
+
+
+21. HEATMAP OVERVIEW PAGER
+--------------------------
+
+- Heatmap Overview and Reading Trends are two swipeable full-page destinations.
+- Their page order can be changed in Personalization or by long-pressing the Heatmap
+  dashboard widget.
+- A floating dynamic page indicator remains visible near the visual bottom of the
+  screen and responds continuously while swiping.
+- Search Everything belongs to Heatmap Overview, not Reading Trends.
+- Transitioning to Reading Trends deliberately animates Search Everything away to
+  communicate that ordinary search does not drive that page.
+- Returning restores Search Everything only when appropriate for the preserved Heatmap
+  scroll position.
+
+
+22. TAG AND ENTRY HEATMAPS
+--------------------------
+
+- Tabs switch between Tags and Entries.
+- Tag Heatmap builds a live co-occurrence map from local metadata.
+- Entry Heatmap uses a precomputed/cached layout for large libraries.
+- Entry Heatmap recalculation is started explicitly from Settings > Data.
+- All entries remain represented as lightweight point nodes.
+- Pan, zoom and reset controls explore the graph.
+- Node selection opens contextual tag or entry information.
+- Tag nodes can lead to matching entries.
+- Entry nodes can open Selected Entry.
+- Entry-family outlines can reveal related/series structure.
+- Thumbnail Area modes 10%, 25%, 50% and 100% control how much of the viewport receives
+  thumbnail rendering while all other nodes remain visible as points.
+- Thumbnail priority favors read entries within the visible thumbnail area.
+- Thumbnail work is bounded and cached to prevent the large graph from exhausting the
+  app during navigation.
+- Empty cache state explains that Entry Heatmap must be recalculated.
+- Incognito Mode hides graph details without deleting or rebuilding graph data.
+- GitHub Media Mode masks sensitive labels while preserving useful graph geometry.
+
+
+23. TAG GRAPH ANALYSIS
+----------------------
+
+- Open Graph in Settings opens the analytical Tag Graph.
+- Analysis views include:
+  - Tag heatmap.
+  - Raw frequency.
+  - Rated frequency.
+- Can inspect tag-oriented and entry-oriented representations.
+- Tag heatmap emphasizes local tag co-occurrence/cluster relationships.
+- Raw frequency compares the strength/frequency of tags without rating preference.
+- Rated frequency incorporates the user's rating signal.
+- Shows how many rated entries are available for the analysis.
+- Supports pan, zoom, reset and refresh/recompute.
+- Tapping a tag opens tag details and matching local entries.
+- Tapping an entry opens Entry from Graph and can continue into Selected Entry.
+- Privacy modes mask sensitive labels/content while retaining the graph's structure.
+
+
+24. READING TRENDS
+------------------
+
+- Full-screen trend analysis within the Heatmap Overview pager.
+- Compares Tags or Artists / Groups over time.
+- Include misc optionally includes metadata such as language, category, parody,
+  translation and doujinshi-style fields.
+- Default time range is All Time.
+- Time ranges and adaptive bins:
+  - Today: six four-hour bins.
+  - Week: daily bins.
+  - Month: calendar-week bins.
+  - Year: monthly bins.
+  - All Time: adaptive monthly, quarterly, half-year or yearly bins depending on span.
+- Long-span Reads values are normalized to a comparable 30-day rate when appropriate.
+- Reads shows matching reading volume.
+- Share shows the matching subject's proportion of reading interest.
+- Empty Share periods retain the latest meaningful ratio instead of falsely dropping
+  to zero on a day with no reading.
+- Metric filters:
+  - All.
+  - Positive.
+  - Avg rating.
+- Rating-based metrics use balanced sample/confidence adjustment so a single extreme
+  rating does not automatically defeat a well-supported trend.
+- Compare can show zero through five manually selected lines.
+- Selected lines keep stable, distinct colors throughout the current session.
+- Choose opens a searchable, color-aware selection dialog.
+- All trends displays the complete eligible field as subdued background lines.
+- Unique selects noteworthy candidates from the union of:
+  - Core interests.
+  - Metric standouts.
+  - Curve-shape outliers.
+- Unique scoring is metric-aware and sample-aware.
+- Manually selected lines remain visible even when they fall below the automatic
+  Unique threshold.
+- A minimum prevalence slider filters low-sample candidates and immediately
+  recalculates the Unique baseline.
+- Tags + Share defaults to the established 5% prevalence sweet spot; Artists / Groups
+  retain their separate baseline.
+- Curves are smoothed in a restrained Google-Trends-like style without exaggerating
+  the underlying observations.
+- Dragging across the graph follows the nearest line and period.
+- Long-pressing a line or legend creates a haptic/crosshair inspection mode and then
+  explains the period change and main drivers.
+- Near-zero, tiny-sample, partial-bucket and empty-period edge cases are handled
+  explicitly.
+- Re-reads contribute in the period when the re-read occurred.
+- Refreshes preserve ghost geometry and replace only relevant data to avoid a full
+  graph flash.
+- Switching View All back to Compare does not briefly color every background line.
+- GitHub Media Mode blurs graph text/labels while leaving graph geometry visible for QA.
+
+
+25. THEMES AND APPEARANCE
+-------------------------
+
+- Theme modes: Auto, Light and Dark.
+- Auto follows the system theme.
+- Extra dark is an off-by-default Settings / Personalization toggle using Book
+  Tracker's deeper dark surfaces; it only affects dark mode and preserves accents.
+- Accent picker provides app accent-color choices, including supported dynamic/system
+  color behavior.
+- Accent changes are stored as portable preferences.
+- Home UI can be switched between Legacy and Dashboard.
+- Entry layout can be standard cards or gallery grid.
+- Gallery column count is configurable.
+- Thumbnail display can be enabled/disabled.
+- Reduced thumbnails during fast scrolling can be enabled/disabled.
+- Optional performance overlay shows FPS, thumbnail throughput, duplicate checks and
+  cache status for diagnostics.
+- UI avoids square default-material touch shapes where custom rounded app surfaces are
+  used.
+
+
+26. PERSONALIZATION SETTINGS
+----------------------------
+
+- Configure which Entries modes appear in the filter cycle.
+- Reorder enabled entry modes; the first becomes the default.
+- Configure Legacy Home ordering when Legacy is active.
+- Configure Dashboard discovery order:
+  - Suggested Entries.
+  - Random Entries.
+  - Sauce Finder.
+- Configure Dashboard insight order:
+  - Subscriptions.
+  - Heatmap.
+  - History.
+- Configure Heatmap pager order between Heatmap Overview and Reading Trends.
+- Set the default Browser duplicate-check mode.
+- Set default sort field/direction for Entries.
+- Set default sort field/direction for Tags.
+- Set default sort field/direction for Artists / Groups.
+- Personalization controls are presented directly in the Personalization card rather
+  than hidden behind an extra nested launcher.
+
+
+27. BLOCK TAGS SETTINGS
+-----------------------
+
+- Dedicated Block Tags manager under Settings > Display.
+- Fetches the available remote tag catalog.
+- Search blockable tags.
+- Sort blockable tags by Name, Type or Count.
+- Toggle tags individually.
+- Reset the blocked-tag selection.
+- Apply blocked tags to Browser Home results.
+- Apply blocked tags to combined Browser Search Terms.
+- Blocking affects remote discovery and does not delete imported entries or alter the
+  local Tags database.
+
+
+28. PRIVACY, APP LOCK AND MEDIA-SAFE QA
+---------------------------------------
+
+- App Lock protects launch/re-entry with a PIN.
+- PIN can be changed and supports up to 20 digits.
+- Biometric unlock is supported when the device provides it.
+- A short background grace period avoids needless immediate relocking.
+- Incognito Mode can be toggled by double-tapping the page title.
+- Library privacy and Browser privacy are coordinated but keep their context-specific
+  behavior.
+- Incognito masks sensitive thumbnails, titles, metadata, tags, comments, graphs,
+  recommendations and subscription content where applicable.
+- Incognito can block sensitive operations such as Desktop Bridge exposure.
+- GitHub Media Mode is a separate developer/capture privacy layer.
+- GitHub Media Mode can be toggled through the hidden Search Everything "github"
+  action.
+- It applies stronger thumbnail and sensitive-text masking than personal Incognito.
+- It preserves the selected Light/Dark theme instead of replacing the app with a fake
+  capture-only UI.
+- Graph modes mask labels/text while leaving non-sensitive geometry visible for QA.
+- GitHub Media Mode never replaces or deletes backups/library data.
+- Screen-capture workflow can omit the status bar for clean public documentation.
+
+
+29. BACKUP, RESTORE AND PORTABLE DATA
+------------------------------------
+
+- Export Data creates a full portable library snapshot.
+- Import Data restores/merges a portable snapshot.
+- Export CSV creates a human-readable tabular library export.
+- Portable data includes imported entries and metadata.
+- Includes read/rating sessions and re-read history.
+- Includes subscriptions, seen codes and subscription events.
+- Includes Tag Presets and Train Your Model signals.
+- Includes portable display/personalization/theme/accent preferences.
+- Procedural backup can use a user-selected document-tree folder.
+- Backup Now runs the procedural backup on demand.
+- Procedural backup also runs automatically at the configured lifecycle point.
+- Rolling history retains current plus previous generations for rollback.
+- Shared thumbnail archive reuses stored cover media and duplicate hashes.
+- Backup progress distinguishes new, reused and failed items.
+- Store Thumbnails Locally in Backup is optional because it materially increases backup
+  size.
+- Backup and gallery-download folders can be selected independently.
+- Package-name migration is supported through export from the old install and import
+  into the current com.roinur.saucetracker app.
+- GitHub Media Mode does not create a second fake backup channel or overwrite real data.
+
+
+30. LIBRARY HEALTH
+------------------
+
+- Read-only health scan checks SQLite integrity.
+- Reports table and record counts.
+- Finds orphaned relationships.
+- Finds invalid rating values.
+- Checks read-history consistency.
+- Checks download-tree and backup-tree permissions.
+- Inspects rebuildable thumbnail/cache state.
+- Inspects Entry Heatmap cache status.
+- Inspects Suggested Entries profile/candidate fingerprints.
+- Inspects Sauce Finder index health.
+- Inspects Tag Preset and Train Your Model stores.
+- Inspects portable preference state.
+- Verified Restore imports the selected procedural backup twice into an isolated
+  temporary database.
+- The second isolated import verifies idempotency.
+- Verified Restore never mutates the production library.
+- Reading existing backups never creates folders or rewrites backup files; incomplete
+  multi-source files are rejected before restore, and legacy history/subscriptions
+  are compared with their explicit 2.0 defaults without ignoring data changes.
+- Browser/removed-entry history is preserved; missing profile/source owners are
+  reported separately from sessions with no current library metadata.
+- Reading outside library is an informational healthy classification, including
+  unrated browsing; older/manual read marks without sessions do not fail backup health.
+  Invalid owners and non-lossless restores still require action.
+- Rebuildable caches can be cleared after confirmation without deleting core library
+  records.
+- Scan Again reruns the checks after corrective work.
+
+
+31. DATA MAINTENANCE
+--------------------
+
+- Recalculate Entry Heatmap rebuilds the expensive cached entry layout explicitly.
+- Recalculation reports progress and a completion summary.
+- The app avoids recalculating Entry Heatmap on every visit.
+- Launch thumbnail preload can be enabled and assigned a percentage from 0% to 100%.
+- Clear All Entries is protected by export guidance and explicit confirmation.
+- Local downloaded media management is independent of metadata deletion.
+- Rebuildable caches and indexes are separated from irreplaceable library/history data.
+
+
+32. DESKTOP BRIDGE
+------------------
+
+- Starts a local desktop-accessible web interface from Settings > Data.
+- Runs over HTTPS on the same local network.
+- Shows/copies the Desktop Bridge URL.
+- Uses an on-device challenge/unlock flow before exposing the library.
+- The challenge requires consecutive correct rounds rather than a single reusable code.
+- Uses a per-install local TLS identity/certificate.
+- The bridge can search and browse library entries, tags and creators.
+- Its internal Browser searches NHentai and MangaDex without leaving Sauce Tracker;
+  source results, details and MangaDex chapter lists stay inside the same web client.
+- Its fullscreen slideshow reader supports horizontal and vertical reading, neighboring
+  page prefetch, chapter continuation, saved resume position, chapter progress and
+  profile-aware reading-time/history sessions.
+- The reader's Chapters control opens an in-place chapter drawer, and Search Everything
+  accepts provider URLs/IDs for the same source-aware import path used by the phone.
+- Desktop accent and active profile controls use the phone's shared settings and visual
+  identity rather than maintaining an independent Bridge palette.
+- AUTO uses the phone's resolved Material You wallpaper accent. The desktop reader adds
+  zoom, horizontal panning and NHentai's rating prompt, and its finalized sessions feed
+  page and reading-time totals into shared History and Trends.
+- Supports desktop-side sorting/filtering and common entry actions such as import, pin,
+  read, rating and delete; provider pages are not opened as an external reading path.
+- Changes are applied to the same local library rather than a detached export.
+- Start and Stop controls make bridge lifetime explicit.
+- The Android app must remain available and both devices must be on a reachable local
+  network.
+- Incognito Mode blocks/stops Desktop Bridge to prevent accidental exposure.
+
+
+33. BACKGROUND WORK, NOTIFICATIONS AND RESILIENCE
+-------------------------------------------------
+
+- WorkManager schedules periodic subscription checks under Android's background-work
+  constraints.
+- Notification permission failure does not disable in-app subscriptions.
+- Subscription notifications deep-link to the correct page after unlock.
+- Network request policy separates transient failures from permanent failures.
+- Long-running calculations use explicit progress and cancellation-safe state.
+- Thumbnail loaders, graph thumbnail zones and Sauce Finder indexing use bounded work
+  rather than creating unlimited parallel jobs.
+- App lifecycle handling preserves visible library state after returning from Browser.
+- Expensive feature state is scoped to its feature screen and cached where reuse is
+  valuable.
+
+
+34. FEATURE DISTINCTIONS AT A GLANCE
+------------------------------------
+
+- Selected Entry > More like this:
+  Similar items already imported into the local library.
+- Browser Gallery > More like this:
+  Related galleries supplied by the remote website.
+- Suggested Entries:
+  New remote discovery inferred from the user's rated local library.
+- Train Your Model:
+  Optional explicit reasons that supplement Suggested Entries.
+- Random Entries:
+  Random items already present in the local library.
+- Sauce Finder:
+  Reverse-matches an image against the user's local cover/page hash index.
+  Full indexing prioritizes downloaded entries, then read entries, then the rest.
+  Includes MangaDex covers; chapter pages are not downloaded or treated as gallery pages.
+- Tag Heatmap:
+  Local tag co-occurrence structure.
+- Entry Heatmap:
+  Cached spatial layout of all imported entries.
+- Tag Graph:
+  Interactive tag frequency/rating analysis.
+- Reading Trends:
+  Time-series analysis of reading interest, share and rating behavior.
+- Tag Presets:
+  Named reusable local-library filters.
+- Block Tags:
+  Remote Browser discovery exclusions.
+
+
+END OF CHEAT SHEET
+==================

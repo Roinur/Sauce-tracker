@@ -325,8 +325,8 @@ internal fun LazyListScope.dashboardEntriesSection(
                                             ) {
                                                 ThumbnailImage(
                                                     thumbnailUrl = entry.thumbnailUrl,
-                                                    backupCode = entry.code,
-                                                    contentDescription = "Cover for code ${entry.code}",
+                                                    backupCode = entry.code.takeIf { entry.isNhentai },
+                                                    contentDescription = if (entry.isNhentai) "Cover for ${entry.displayId}" else "MangaDex cover",
                                                     obscure = vm.incognitoModeEnabled,
                                                     preferLowRes = useReducedScrollThumbnails,
                                                     modifier = Modifier.fillMaxSize()
@@ -358,6 +358,9 @@ internal fun LazyListScope.dashboardEntriesSection(
                                             }
                                             EntryCodeLine(
                                                 code = entry.code,
+                                                displayId = entry.displayId,
+                                                idLabel = if (entry.isNhentai) "Code" else entry.sourceId.replaceFirstChar { it.uppercase() },
+                                                showValue = entry.isNhentai,
                                                 showSessionNewBadge = !selected && vm.isSessionNewEntry(entry.code),
                                                 incognitoModeEnabled = vm.incognitoModeEnabled,
                                                 textStyle = MaterialTheme.typography.bodySmall,
@@ -562,6 +565,9 @@ internal fun LazyListScope.dashboardEntriesSection(
                                 )
                                 EntryCodeLine(
                                     code = entry.code,
+                                    displayId = entry.displayId,
+                                    idLabel = if (entry.isNhentai) "Code" else entry.sourceId.replaceFirstChar { it.uppercase() },
+                                    showValue = entry.isNhentai,
                                     showSessionNewBadge = !selected && vm.isSessionNewEntry(entry.code),
                                     incognitoModeEnabled = vm.incognitoModeEnabled,
                                     textStyle = MaterialTheme.typography.bodySmall,
@@ -606,7 +612,7 @@ internal fun LazyListScope.dashboardEntriesSection(
                                 ) {
                                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                                         Text(
-                                            text = "Pages: ${entry.numPages}",
+                                            text = "${entry.unitLabel.replaceFirstChar { it.uppercase() }}: ${entry.numPages}",
                                             modifier = Modifier.privacyObfuscate(
                                                 enabled = vm.incognitoModeEnabled,
                                                 overlayColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = INCOGNITO_OVERLAY_ALPHA)
@@ -651,8 +657,8 @@ internal fun LazyListScope.dashboardEntriesSection(
                                 if (vm.showThumbnails && entry.thumbnailUrl.isNotBlank()) {
                                     ThumbnailImage(
                                         thumbnailUrl = entry.thumbnailUrl,
-                                        backupCode = entry.code,
-                                        contentDescription = "Cover for code ${entry.code}",
+                                        backupCode = entry.code.takeIf { entry.isNhentai },
+                                        contentDescription = if (entry.isNhentai) "Cover for ${entry.displayId}" else "MangaDex cover",
                                         obscure = vm.incognitoModeEnabled,
                                         preferLowRes = useReducedScrollThumbnails,
                                         modifier = Modifier
@@ -881,13 +887,16 @@ internal fun LazyListScope.dashboardEntriesSection(
     
                                     EntryCodeLine(
                                         code = entry.code,
+                                        displayId = entry.displayId,
+                                        idLabel = if (entry.isNhentai) "Code" else entry.sourceId.replaceFirstChar { it.uppercase() },
+                                        showValue = entry.isNhentai,
                                         showSessionNewBadge = !selected && vm.isSessionNewEntry(entry.code),
                                         incognitoModeEnabled = vm.incognitoModeEnabled,
                                         textStyle = MaterialTheme.typography.bodySmall,
                                         codeColor = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                     Text(
-                                        text = "Pages: ${entry.numPages}",
+                                        text = "${entry.unitLabel.replaceFirstChar { it.uppercase() }}: ${entry.numPages}",
                                         modifier = Modifier.privacyObfuscate(
                                             enabled = vm.incognitoModeEnabled,
                                             overlayColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = INCOGNITO_OVERLAY_ALPHA)
@@ -916,8 +925,8 @@ internal fun LazyListScope.dashboardEntriesSection(
                                     if (vm.showThumbnails && entry.thumbnailUrl.isNotBlank()) {
                                         ThumbnailImage(
                                             thumbnailUrl = entry.thumbnailUrl,
-                                            backupCode = entry.code,
-                                            contentDescription = "Cover for code ${entry.code}",
+                                            backupCode = entry.code.takeIf { entry.isNhentai },
+                                            contentDescription = if (entry.isNhentai) "Cover for ${entry.displayId}" else "MangaDex cover",
                                             obscure = vm.incognitoModeEnabled,
                                             preferLowRes = useReducedScrollThumbnails,
                                             modifier = Modifier
@@ -1148,13 +1157,16 @@ internal fun LazyListScope.dashboardEntriesSection(
     
                                             EntryCodeLine(
                                                 code = entry.code,
+                                                displayId = entry.displayId,
+                                                idLabel = if (entry.isNhentai) "Code" else entry.sourceId.replaceFirstChar { it.uppercase() },
+                                                showValue = entry.isNhentai,
                                                 showSessionNewBadge = !selected && vm.isSessionNewEntry(entry.code),
                                                 incognitoModeEnabled = vm.incognitoModeEnabled,
                                                 textStyle = MaterialTheme.typography.bodySmall,
                                                 codeColor = MaterialTheme.colorScheme.onSurfaceVariant
                                             )
                                             Text(
-                                                text = "Pages: ${entry.numPages}",
+                                                text = "${entry.unitLabel.replaceFirstChar { it.uppercase() }}: ${entry.numPages}",
                                                 modifier = Modifier.privacyObfuscate(
                                                     enabled = vm.incognitoModeEnabled,
                                                     overlayColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = INCOGNITO_OVERLAY_ALPHA)
@@ -1183,8 +1195,8 @@ internal fun LazyListScope.dashboardEntriesSection(
                                             if (vm.showThumbnails && entry.thumbnailUrl.isNotBlank()) {
                                                 ThumbnailImage(
                                                     thumbnailUrl = entry.thumbnailUrl,
-                                                    backupCode = entry.code,
-                                                    contentDescription = "Cover for code ${entry.code}",
+                                                    backupCode = entry.code.takeIf { entry.isNhentai },
+                                                    contentDescription = if (entry.isNhentai) "Cover for ${entry.displayId}" else "MangaDex cover",
                                                     obscure = vm.incognitoModeEnabled,
                                                     preferLowRes = useReducedScrollThumbnails,
                                                     modifier = Modifier

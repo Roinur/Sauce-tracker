@@ -54,7 +54,7 @@ internal class SauceFinderController(
             _state.value = _state.value.copy(
                 indexing = true,
                 progress = 0f,
-                message = "Building the full library image index. You can leave this page."
+                message = "Indexing downloaded entries, then read entries, then the rest. You can leave this page."
             )
             runCatching {
                 val details = loadDetails()

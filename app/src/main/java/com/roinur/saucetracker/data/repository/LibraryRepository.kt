@@ -47,9 +47,9 @@ internal class LibraryRepository(
     fun sameArtistEntries(code: Int, limit: Int = 18): List<RelatedEntryEntity> =
         entries.sameArtistEntries(code, limit)
     fun deleteEntry(code: Int) = entries.delete(code)
-    fun setEntryRating(code: Int, rating: Int) = entries.setRating(code, rating)
-    fun setEntryRead(code: Int, isRead: Boolean) = entries.setRead(code, isRead)
-    fun setEntryPinned(code: Int, pinned: Boolean) = entries.setPinned(code, pinned)
+    fun setEntryRating(code: Int, rating: Int, profileId: String? = null) = if (profileId == null) entries.setRating(code, rating) else database.setEntryRating(code, rating, profileId)
+    fun setEntryRead(code: Int, isRead: Boolean, profileId: String? = null) = if (profileId == null) entries.setRead(code, isRead) else database.setEntryRead(code, isRead, profileId)
+    fun setEntryPinned(code: Int, pinned: Boolean, profileId: String? = null) = if (profileId == null) entries.setPinned(code, pinned) else database.setEntryPinned(code, pinned, profileId)
 
     fun tags(
         textFilter: String,

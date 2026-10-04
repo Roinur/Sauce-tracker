@@ -3,6 +3,7 @@ package com.roinur.saucetracker.core.preferences
 internal const val SAUCE_PREFERENCES_NAME = "nhtagbook_prefs"
 
 internal const val KEY_THEME_MODE = "theme_mode"
+internal const val KEY_EXTRA_DARK = "extra_dark"
 internal const val KEY_ACCENT_MODE = "accent_mode"
 internal const val KEY_CUNNY_MODE_ARMED = "cunny_mode_armed"
 internal const val KEY_APP_LOCK_ENABLED = "app_lock_enabled"

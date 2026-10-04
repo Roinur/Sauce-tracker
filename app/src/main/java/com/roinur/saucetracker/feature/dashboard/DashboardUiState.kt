@@ -7,6 +7,7 @@ import com.roinur.saucetracker.ThemeMode
 internal data class DashboardUiState(
     val homeSurface: HomeSurface,
     val themeMode: ThemeMode,
+    val extraDark: Boolean,
     val accentMode: AccentMode,
     val incognitoEnabled: Boolean,
     val cunnyModeActive: Boolean,
@@ -17,6 +18,7 @@ internal data class DashboardUiState(
 internal fun DashboardViewModel.dashboardUiState(homeSurface: HomeSurface): DashboardUiState = DashboardUiState(
     homeSurface = homeSurface,
     themeMode = themeMode,
+    extraDark = extraDark,
     accentMode = accentMode,
     incognitoEnabled = incognitoModeEnabled,
     cunnyModeActive = cunnyModeActive,

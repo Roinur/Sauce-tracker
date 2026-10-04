@@ -1044,7 +1044,9 @@ internal fun computeTagGraphSnapshot(data: TagGraphDataSnapshot): TagGraphSnapsh
             boundaryCenterY = avgY,
             boundaryRadiusPx = 0f,
             x = avgX,
-            y = avgY
+            y = avgY,
+            sourceId = entry.sourceId,
+            remoteId = entry.remoteId
         )
     }
     val entryNodes = spreadTagGraphEntryNodes(rawEntryNodes)

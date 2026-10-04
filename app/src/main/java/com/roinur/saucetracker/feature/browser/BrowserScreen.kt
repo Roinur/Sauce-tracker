@@ -2,11 +2,16 @@ package com.roinur.saucetracker.feature.browser
 
 import com.roinur.saucetracker.core.ui.components.*
 import com.roinur.saucetracker.data.database.SauceTrackerDatabase
+import com.roinur.saucetracker.data.profile.ProfileStore
 
 import com.roinur.saucetracker.*
 import com.roinur.saucetracker.core.media.*
 import com.roinur.saucetracker.data.backup.*
 import com.roinur.saucetracker.feature.slideshow.GallerySlideshowActivity
+import com.roinur.saucetracker.feature.slideshow.MangaDexReaderWarmup
+import com.roinur.saucetracker.data.source.MangaDexSourceAdapter
+import com.roinur.saucetracker.data.source.SourceId
+import com.roinur.saucetracker.data.source.SourceRegistry
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -81,6 +86,7 @@ import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.LocalMinimumInteractiveComponentEnforcement
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -101,6 +107,7 @@ import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
@@ -203,10 +210,12 @@ private val BROWSER_EXIT_RATING_PROMPT_SAVER = listSaver<BrowserExitRatingPrompt
     }
 )
 
-@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 internal fun BrowserScreen(
     initialCode: Int?,
+    initialRemoteId: String?,
+    sourceId: String,
     initialQuery: String,
     initialCreatorType: String?,
     initialCreatorName: String?,
@@ -218,7 +227,9 @@ internal fun BrowserScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val api: BrowserViewModel = androidx.lifecycle.viewmodel.compose.viewModel()
+    api.configureSource(sourceId)
     val db = remember { SauceTrackerDatabase(context.applicationContext) }
+    val library = remember(db) { BrowserLibraryAccess(db) }
     val prefs = remember(context) {
         context.getSharedPreferences(
             GitHubMediaSession.preferencesName(GALLERY_BROWSER_PREFS_NAME),
@@ -244,6 +255,10 @@ internal fun BrowserScreen(
         mutableStateOf(defaultBrowserDuplicateCheckMode)
     }
     var showBrowserDuplicateModeDialog by remember { mutableStateOf(false) }
+    var mangaDexAgeRatingMode by rememberSaveable { mutableStateOf(MangaDexAgeRatingMode.ADULT) }
+    var pendingMangaDexAgeRatingMode by rememberSaveable { mutableStateOf(mangaDexAgeRatingMode) }
+    var showMangaDexAgeRatingDialog by remember { mutableStateOf(false) }
+    api.configureMangaDexAgeRating(mangaDexAgeRatingMode)
     var duplicateComparisonState by remember { mutableStateOf<BrowserDuplicateComparisonState?>(null) }
 
     var searchInput by remember { mutableStateOf(initialQuery) }
@@ -312,6 +327,8 @@ internal fun BrowserScreen(
         mutableStateOf<BrowserExitRatingPromptState?>(null)
     }
     var pendingListImportRequest by remember { mutableStateOf<BrowserPendingImportRequest?>(null) }
+    var pendingListImportDetail by remember { mutableStateOf<BrowserGalleryDetail?>(null) }
+    var pendingListImportLanguage by remember { mutableStateOf("") }
     // This is an obligation, not transient UI state. Image pressure can recreate
     // Browser while Slideshow is open, so retain the code until Save or Skip.
     var pendingSlideshowRatingCode by rememberSaveable { mutableStateOf<Int?>(null) }
@@ -338,6 +355,25 @@ internal fun BrowserScreen(
     var incognitoToggleAuthPending by remember { mutableStateOf(false) }
     var incognitoToggleAuthNonce by remember { mutableStateOf(0L) }
     var incognitoTogglePinHash by remember { mutableStateOf("") }
+
+    LaunchedEffect(pendingListImportRequest?.code) {
+        val request = pendingListImportRequest
+        if (request == null) {
+            pendingListImportDetail = null
+            pendingListImportLanguage = ""
+        } else {
+            pendingListImportDetail = null
+            pendingListImportLanguage = ""
+            val selectedSnapshot = selectedDetail?.takeIf { it.summary.code == request.code }
+            val loaded = selectedSnapshot ?: withContext(Dispatchers.IO) {
+                runCatching { api.fetchGalleryDetail(request.code) }.getOrNull()
+            }
+            if (pendingListImportRequest?.code == request.code) {
+                pendingListImportDetail = loaded
+                pendingListImportLanguage = loaded?.selectedLanguage.orEmpty()
+            }
+        }
+    }
     var incognitoTogglePinSalt by remember { mutableStateOf("") }
     var incognitoToggleBiometricEnabled by remember { mutableStateOf(true) }
     var incognitoToggleAllowCancel by remember { mutableStateOf(false) }
@@ -518,12 +554,14 @@ internal fun BrowserScreen(
     fun promptRatingForCode(code: Int, fallbackTitle: String, closeAfter: Boolean) {
         if (code <= 0) return
         scope.launch {
-            val detail = withContext(Dispatchers.IO) { db.getEntryDetail(code) }
-            val initial = detail?.rating?.coerceIn(0, 5) ?: 0
-            val wasReadBefore = detail?.isRead == true
+            val summary = selectedDetail?.summary?.takeIf { it.code == code }
+                ?: listRows.firstOrNull { it.code == code }
+            val localState = withContext(Dispatchers.IO) { summary?.let(library::state) }
+            val initial = localState?.rating?.coerceIn(0, 5) ?: 0
+            val wasReadBefore = localState?.isRead == true
             ratingPromptState = BrowserExitRatingPromptState(
                 code = code,
-                title = detail?.title?.ifBlank { fallbackTitle } ?: fallbackTitle,
+                title = summary?.title?.ifBlank { fallbackTitle } ?: fallbackTitle,
                 rating = initial,
                 closeAfter = closeAfter,
                 wasReadBefore = wasReadBefore,
@@ -565,17 +603,7 @@ internal fun BrowserScreen(
         listLibraryRequestId = requestId
         scope.launch {
             val states = withContext(Dispatchers.IO) {
-                val batchStates = db.getBrowserLibraryStates(codes)
-                codes.associateWith { code ->
-                    batchStates[code]?.let { local ->
-                        BrowserLocalLibraryState(
-                            exists = true,
-                            rating = local.rating.coerceIn(0, 5),
-                            isRead = local.isRead,
-                            pinned = local.pinned
-                        )
-                    } ?: BrowserLocalLibraryState(exists = false, rating = 0, isRead = false, pinned = false)
-                }
+                library.states(rows)
             }
             if (listLibraryRequestId == requestId) {
                 listLibraryStates = states
@@ -584,6 +612,7 @@ internal fun BrowserScreen(
     }
 
     fun refreshDuplicateSeeds() {
+        if (sourceId != "nhentai") return
         scope.launch {
             val duplicateSnapshot = withContext(Dispatchers.IO) {
                 val seeds = db.listDuplicateSeeds()
@@ -789,9 +818,23 @@ internal fun BrowserScreen(
             }
 
             val pageToLoad = if (reset) 1 else (currentPage + 1).coerceAtLeast(1)
+            val creatorRef = activeCreator
+            val effectiveQuery = if (creatorRef == null) buildEffectiveQuery(activeSearchTerm) else ""
+            if (reset && creatorRef == null) {
+                val cached = withContext(Dispatchers.IO) {
+                    api.cachedMangaDexLandingPage(effectiveQuery, pageToLoad, searchSortMode)
+                }
+                if (cached != null) {
+                    val cachedRows = cached.results.filterNot { it.code in hiddenSuggestionCodes }
+                    listRows = cachedRows
+                    pruneDuplicateHintState(cachedRows)
+                    refreshListLibraryStates(cachedRows)
+                    currentPage = cached.page
+                    hasMorePages = cached.hasMore
+                }
+            }
             val result = withContext(Dispatchers.IO) {
                 runCatching {
-                    val creatorRef = activeCreator
                     if (creatorRef != null) {
                         api.searchCreatorGalleries(
                             creatorType = creatorRef.type,
@@ -800,7 +843,6 @@ internal fun BrowserScreen(
                             sortMode = searchSortMode
                         )
                     } else {
-                        val effectiveQuery = buildEffectiveQuery(activeSearchTerm)
                         api.searchGalleries(
                             query = effectiveQuery,
                             page = pageToLoad,
@@ -998,6 +1040,53 @@ internal fun BrowserScreen(
                             selectedDetail = selectedDetail?.copy(relatedGalleries = related)
                         }
                     }
+                    if (!detail.summary.isNhentai) {
+                        scope.launch {
+                            val chapters = withContext(Dispatchers.IO) {
+                                runCatching { api.fetchAllChapters(detail.summary.remoteId) }
+                            }
+                            if (detailLoadRequestId == requestId && selectedDetail?.summary?.code == code) {
+                                chapters.onSuccess { loaded ->
+                                    selectedDetail = selectedDetail?.let { current ->
+                                        current.copy(
+                                            summary = current.summary.copy(
+                                                numPages = loaded.size,
+                                                unitLabel = "chapters"
+                                            ),
+                                            chapters = loaded
+                                        )
+                                    }
+                                    // Once the visible chapter list is ready, warm the same
+                                    // manifest/page path Slideshow will consume. This never marks
+                                    // the chapter downloaded and remains bounded by reader cache.
+                                    scope.launch {
+                                        withContext(Dispatchers.IO) {
+                                            runCatching {
+                                                val progress = db.sourceReaderProgress(
+                                                    ProfileStore(db).activeProfileId(),
+                                                    detail.summary.sourceId,
+                                                    detail.summary.remoteId
+                                                )
+                                                val adapter = SourceRegistry.createDefault()
+                                                    .requireAdapter(SourceId("mangadex")) as MangaDexSourceAdapter
+                                                MangaDexReaderWarmup.start(
+                                                    context = context,
+                                                    adapter = adapter,
+                                                    remoteId = detail.summary.remoteId,
+                                                    chapterId = progress?.chapterId,
+                                                    startPageIndex = progress?.pageIndex ?: 0,
+                                                    prefetchPages = true
+                                                )
+                                            }
+                                        }
+                                    }
+                                }.onFailure { error ->
+                                    errorMessage = error.message ?: "Could not load MangaDex chapters."
+                                }
+                                loadingDetailCode = null
+                            }
+                        }
+                    }
                 }
             }.onFailure { exc ->
                 if (detailLoadRequestId == requestId) {
@@ -1008,14 +1097,62 @@ internal fun BrowserScreen(
                     errorMessage = exc.message ?: "Could not load gallery details."
                 }
             }
-            if (detailLoadRequestId == requestId) {
+            if (detailLoadRequestId == requestId && selectedDetail?.summary?.isNhentai != false) {
                 loadingDetailCode = null
             }
         }
     }
 
-    fun openSlideshow(detail: BrowserGalleryDetail, startPage: Int = 1) {
+    fun openSlideshow(detail: BrowserGalleryDetail, startPage: Int = 1, chapterId: String? = null) {
         val summary = detail.summary
+        if (!summary.isNhentai) {
+            pendingSlideshowRatingCode = null
+            scope.launch {
+                val savedProgress = if (chapterId.isNullOrBlank()) {
+                    withContext(Dispatchers.IO) {
+                        db.sourceReaderProgress(
+                            ProfileStore(db).activeProfileId(),
+                            summary.sourceId,
+                            summary.remoteId
+                        )
+                    }
+                } else {
+                    null
+                }
+                val requestedChapterId = chapterId?.takeIf(String::isNotBlank)
+                    ?: savedProgress?.chapterId
+                val requestedStartPage = savedProgress
+                    ?.takeIf { it.chapterId == requestedChapterId }
+                    ?.pageIndex?.plus(1)
+                    ?: startPage
+                val adapter = SourceRegistry.createDefault()
+                    .requireAdapter(SourceId("mangadex")) as MangaDexSourceAdapter
+                MangaDexReaderWarmup.start(
+                    context = context,
+                    adapter = adapter,
+                    remoteId = summary.remoteId,
+                    chapterId = requestedChapterId,
+                    startPageIndex = (requestedStartPage - 1).coerceAtLeast(0),
+                    measureOpen = true
+                )
+                slideshowLauncher.launch(
+                    GallerySlideshowActivity.createIntent(
+                        context = context,
+                        code = summary.code,
+                        title = summary.title,
+                        mediaId = 0L,
+                        coverExt = "",
+                        numPages = 0,
+                        startPage = requestedStartPage,
+                        incognitoModeEnabled = incognitoModeEnabled,
+                        sourceId = summary.sourceId,
+                        remoteId = summary.remoteId,
+                        chapterId = requestedChapterId.orEmpty()
+                    )
+                )
+            }
+            return
+        }
         if (summary.mediaId <= 0L || summary.numPages <= 0) return
         pendingSlideshowRatingCode = summary.code
         val intent = GallerySlideshowActivity.createIntent(
@@ -1041,7 +1178,9 @@ internal fun BrowserScreen(
         paneTransitionDirection = BrowserPaneTransitionDirection.Forward
         pushNavSnapshot()
         searchSortMode = BrowserSearchSortMode.RECENT
-        val slug = toBrowserRouteSlug(normalizedType, cleanName).ifBlank { cleanName }
+        val slug = if (sourceId == "nhentai") {
+            toBrowserRouteSlug(normalizedType, cleanName).ifBlank { cleanName }
+        } else cleanName
         activeCreator = BrowserCreatorRef(
             type = normalizedType,
             name = cleanName,
@@ -1065,7 +1204,8 @@ internal fun BrowserScreen(
     }
 
     fun runTagSearch(tagName: String) {
-        val encodedTag = encodeTagSearchTerm(tagName)
+        val encodedTag = if (sourceId == "nhentai") encodeTagSearchTerm(tagName)
+            else "tag:\"${tagName.replace("\"", "")}\""
         if (encodedTag.isBlank()) return
         paneTransitionDirection = BrowserPaneTransitionDirection.Forward
         pushNavSnapshot()
@@ -1081,6 +1221,10 @@ internal fun BrowserScreen(
     fun handleDoneAction() {
         val currentDetail = selectedDetail
         if (currentDetail != null) {
+            if (sourceId == "mangadex") {
+                closeBrowserSecurely()
+                return
+            }
             promptRatingForCode(
                 code = currentDetail.summary.code,
                 fallbackTitle = currentDetail.summary.title.ifBlank { "Gallery ${currentDetail.summary.code}" },
@@ -1091,8 +1235,10 @@ internal fun BrowserScreen(
         closeBrowserSecurely()
     }
 
-    LaunchedEffect(initialCode, initialCreatorType, initialCreatorName) {
-        if (initialCode != null && initialCode > 0) {
+    LaunchedEffect(initialCode, initialRemoteId, initialCreatorType, initialCreatorName, sourceId) {
+        if (!initialRemoteId.isNullOrBlank()) {
+            openDetail(api.browserCodeForRemoteId(initialRemoteId), pushHistory = false)
+        } else if (initialCode != null && initialCode > 0) {
             openDetail(initialCode, pushHistory = false)
         } else if (!initialCreatorType.isNullOrBlank() && !initialCreatorName.isNullOrBlank()) {
             val normalizedType = normalizeBrowserRouteType(initialCreatorType)
@@ -1144,9 +1290,22 @@ internal fun BrowserScreen(
         }
     }
 
+    fun closeMangaDexAgeRatingDialog() {
+        val changed = pendingMangaDexAgeRatingMode != mangaDexAgeRatingMode
+        mangaDexAgeRatingMode = pendingMangaDexAgeRatingMode
+        api.configureMangaDexAgeRating(pendingMangaDexAgeRatingMode)
+        showMangaDexAgeRatingDialog = false
+        if (changed) {
+            selectedDetail = null
+            loadPage(reset = true)
+        }
+    }
+
     BackHandler(enabled = true) {
         if (duplicateComparisonState != null) {
             duplicateComparisonState = null
+        } else if (showMangaDexAgeRatingDialog) {
+            closeMangaDexAgeRatingDialog()
         } else if (showBrowserDuplicateModeDialog) {
             showBrowserDuplicateModeDialog = false
         } else {
@@ -1180,7 +1339,7 @@ internal fun BrowserScreen(
                             }
                             "$typeLabel: ${creatorRef.name}"
                         } else {
-                            "nhentai.net"
+                            if (sourceId == "mangadex") "MangaDex" else "nhentai.net"
                         }
                         Box(
                             modifier = Modifier
@@ -1192,7 +1351,12 @@ internal fun BrowserScreen(
                                             tryAwaitRelease()
                                         },
                                         onLongPress = {
-                                            showBrowserDuplicateModeDialog = true
+                                            if (sourceId == "mangadex") {
+                                                pendingMangaDexAgeRatingMode = mangaDexAgeRatingMode
+                                                showMangaDexAgeRatingDialog = true
+                                            } else {
+                                                showBrowserDuplicateModeDialog = true
+                                            }
                                         },
                                         onDoubleTap = {
                                             requestIncognitoModeToggle()
@@ -1374,6 +1538,7 @@ internal fun BrowserScreen(
                                 incognitoModeEnabled = incognitoModeEnabled,
                                 loading = loadingDetailCode == detail.summary.code,
                                 onOpenSlideshow = { page -> openSlideshow(detail, page) },
+                                onOpenChapter = { chapterId -> openSlideshow(detail, 1, chapterId) },
                                 onOpenCode = { code -> openDetail(code, pushHistory = false) },
                                 onOpenRelatedCode = { code -> openDetail(code, pushHistory = true) },
                                 onOpenCreator = ::openCreator,
@@ -1387,6 +1552,25 @@ internal fun BrowserScreen(
                                         put(code, state)
                                     }
                                     refreshDuplicateSeeds()
+                                },
+                                onLanguageSelected = { language ->
+                                    val localized = detail.withMangaDexLanguage(language)
+                                    selectedDetail = localized
+                                    loadingDetailCode = localized.summary.code
+                                    scope.launch {
+                                        val chapters = withContext(Dispatchers.IO) {
+                                            runCatching { api.fetchAllChapters(localized.summary.remoteId) }
+                                        }
+                                        chapters.onSuccess { loaded ->
+                                            if (selectedDetail?.summary?.remoteId == localized.summary.remoteId) {
+                                                selectedDetail = localized.copy(
+                                                    summary = localized.summary.copy(numPages = loaded.size, unitLabel = "chapters"),
+                                                    chapters = loaded
+                                                )
+                                            }
+                                        }.onFailure { errorMessage = it.message ?: "Could not load MangaDex chapters." }
+                                        loadingDetailCode = null
+                                    }
                                 }
                             )
                             }
@@ -1451,8 +1635,8 @@ internal fun BrowserScreen(
                         }
                         scope.launch {
                             val refreshed = withContext(Dispatchers.IO) {
-                                val existingEntry = db.getEntryDetail(code)
-                                if (existingEntry == null) {
+                                val row = listRows.firstOrNull { it.code == code }
+                                if (row == null || !library.state(row).exists) {
                                     return@withContext BrowserLocalLibraryState(
                                         exists = false,
                                         rating = 0,
@@ -1460,35 +1644,7 @@ internal fun BrowserScreen(
                                         pinned = false
                                     )
                                 }
-                                when (action) {
-                                    is BrowserPendingLibraryAction.SetRating -> {
-                                        db.setEntryRating(code, action.rating.coerceIn(0, 5))
-                                        db.setEntryRead(code, true)
-                                    }
-                                    is BrowserPendingLibraryAction.SetRead -> {
-                                        db.setEntryRead(code, action.isRead)
-                                    }
-                                    is BrowserPendingLibraryAction.SetPinned -> {
-                                        db.setEntryPinned(code, action.pinned)
-                                    }
-                                    BrowserPendingLibraryAction.ToggleRead -> {
-                                        db.setEntryRead(code, !existingEntry.isRead)
-                                    }
-                                    BrowserPendingLibraryAction.TogglePinned -> {
-                                        db.setEntryPinned(code, !db.isEntryPinned(code))
-                                    }
-                                }
-                                val local = db.getEntryDetail(code)
-                                if (local != null) {
-                                    BrowserLocalLibraryState(
-                                        exists = true,
-                                        rating = local.rating.coerceIn(0, 5),
-                                        isRead = local.isRead,
-                                        pinned = db.isEntryPinned(code)
-                                    )
-                                } else {
-                                    BrowserLocalLibraryState(exists = false, rating = 0, isRead = false, pinned = false)
-                                }
+                                library.apply(row, action)
                             }
                             if (!refreshed.exists) {
                                 pendingListImportRequest = BrowserPendingImportRequest(
@@ -1582,32 +1738,34 @@ internal fun BrowserScreen(
                                                 },
                                                 label = { Text("Recent") }
                                             )
-                                            Text(
-                                                text = "Popular",
-                                                style = MaterialTheme.typography.labelMedium,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                                            )
-                                            FilterChip(
+                                            if (api.supports(com.roinur.saucetracker.data.source.SourceCapability.POPULAR_SORT)) {
+                                              Text(
+                                                text = "Popular", style = MaterialTheme.typography.labelMedium,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                              if (sourceId == "nhentai") {
+                                              FilterChip(
                                                 selected = searchSortMode == BrowserSearchSortMode.POPULAR_TODAY,
                                                 onClick = {
                                                     updateSearchSortMode(BrowserSearchSortMode.POPULAR_TODAY)
                                                 },
                                                 label = { Text("Today") }
                                             )
-                                            FilterChip(
+                                              FilterChip(
                                                 selected = searchSortMode == BrowserSearchSortMode.POPULAR_WEEK,
                                                 onClick = {
                                                     updateSearchSortMode(BrowserSearchSortMode.POPULAR_WEEK)
                                                 },
                                                 label = { Text("Week") }
                                             )
-                                            FilterChip(
+                                              }
+                                              FilterChip(
                                                 selected = searchSortMode == BrowserSearchSortMode.POPULAR_ALL_TIME,
                                                 onClick = {
                                                     updateSearchSortMode(BrowserSearchSortMode.POPULAR_ALL_TIME)
                                                 },
                                                 label = { Text("All Time") }
-                                            )
+                                              )
+                                            }
                                         }
                                     }
                                 }
@@ -1639,32 +1797,34 @@ internal fun BrowserScreen(
                                                 },
                                                 label = { Text("Recent") }
                                             )
-                                            Text(
-                                                text = "Popular",
-                                                style = MaterialTheme.typography.labelMedium,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                                            )
-                                            FilterChip(
+                                            if (api.supports(com.roinur.saucetracker.data.source.SourceCapability.POPULAR_SORT)) {
+                                              Text(
+                                                text = "Popular", style = MaterialTheme.typography.labelMedium,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                              if (sourceId == "nhentai") {
+                                              FilterChip(
                                                 selected = searchSortMode == BrowserSearchSortMode.POPULAR_TODAY,
                                                 onClick = {
                                                     updateSearchSortMode(BrowserSearchSortMode.POPULAR_TODAY)
                                                 },
                                                 label = { Text("Today") }
                                             )
-                                            FilterChip(
+                                              FilterChip(
                                                 selected = searchSortMode == BrowserSearchSortMode.POPULAR_WEEK,
                                                 onClick = {
                                                     updateSearchSortMode(BrowserSearchSortMode.POPULAR_WEEK)
                                                 },
                                                 label = { Text("Week") }
                                             )
-                                            FilterChip(
+                                              }
+                                              FilterChip(
                                                 selected = searchSortMode == BrowserSearchSortMode.POPULAR_ALL_TIME,
                                                 onClick = {
                                                     updateSearchSortMode(BrowserSearchSortMode.POPULAR_ALL_TIME)
                                                 },
                                                 label = { Text("All Time") }
-                                            )
+                                              )
+                                            }
                                         }
                                     }
                                 }
@@ -1776,6 +1936,23 @@ internal fun BrowserScreen(
                     }
                 }
                 }
+            }
+
+            if (showMangaDexAgeRatingDialog) {
+                SelectionDialog(
+                    title = "MangaDex age rating",
+                    options = MangaDexAgeRatingMode.entries,
+                    selectedKey = pendingMangaDexAgeRatingMode.name,
+                    optionKey = { it.name },
+                    optionLabel = { it.label },
+                    onSelect = { selected ->
+                        pendingMangaDexAgeRatingMode = selected
+                    },
+                    onReset = {
+                        pendingMangaDexAgeRatingMode = MangaDexAgeRatingMode.ADULT
+                    },
+                    onDismiss = ::closeMangaDexAgeRatingDialog
+                )
             }
         }
 
@@ -2027,76 +2204,71 @@ internal fun BrowserScreen(
         }
 
         pendingListImportRequest?.let { request ->
+            val detailForPrompt = pendingListImportDetail
+            val promptLanguages = remember(detailForPrompt) {
+                buildList {
+                    detailForPrompt?.selectedLanguage?.takeIf(String::isNotBlank)?.let(::add)
+                    addAll(detailForPrompt?.availableLanguages.orEmpty())
+                    detailForPrompt?.chapters.orEmpty().mapNotNullTo(this) { it.language.takeIf(String::isNotBlank) }
+                }.map { it.trim().lowercase() }.filter(String::isNotBlank).distinct()
+            }
+            val languageRequired = sourceId == "mangadex"
             AlertDialog(
                 onDismissRequest = { pendingListImportRequest = null },
                 title = { Text("Import Required") },
                 text = {
-                    Text(
-                        text = "You must import this sauce to change rating, read status, or pin state. Import now?"
-                    )
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("You must import this sauce to change rating, read status, or pin state. Import now?")
+                        if (detailForPrompt == null) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                                Text("Loading import options…", style = MaterialTheme.typography.bodySmall)
+                            }
+                        } else if (languageRequired) {
+                            Text("Choose language", fontWeight = FontWeight.SemiBold)
+                            if (promptLanguages.isEmpty()) {
+                                Text("No translated languages are currently available.", style = MaterialTheme.typography.bodySmall)
+                            } else {
+                                CompositionLocalProvider(LocalMinimumInteractiveComponentEnforcement provides false) {
+                                    FlowRow(
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        promptLanguages.forEach { language ->
+                                            FilterChip(
+                                                selected = pendingListImportLanguage == language,
+                                                onClick = { pendingListImportLanguage = language },
+                                                label = { Text(com.roinur.saucetracker.data.source.mangaDexLanguageDisplayName(language)) }
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 },
                 confirmButton = {
                     TextButton(
+                        enabled = detailForPrompt != null && (!languageRequired || pendingListImportLanguage.isNotBlank()),
                         onClick = {
                             val confirmedRequest = request
+                            val confirmedDetail = detailForPrompt ?: return@TextButton
+                            val localizedDetail = if (languageRequired) {
+                                confirmedDetail.withMangaDexLanguage(pendingListImportLanguage)
+                            } else {
+                                confirmedDetail
+                            }
                             pendingListImportRequest = null
-                            val selectedSnapshot =
-                                selectedDetail?.takeIf { it.summary.code == confirmedRequest.code }
                             scope.launch {
                                 val refreshed = withContext(Dispatchers.IO) {
-                                    val detailForImport = selectedSnapshot
-                                        ?: runCatching {
-                                            api.fetchGalleryDetail(confirmedRequest.code)
-                                        }.getOrNull()
-                                    if (detailForImport != null) {
-                                        db.upsertGallery(toGalleryData(detailForImport))
-                                    }
-                                    if (db.getEntryDetail(confirmedRequest.code) != null) {
-                                        when (val action = confirmedRequest.action) {
-                                            is BrowserPendingLibraryAction.SetRating -> {
-                                                db.setEntryRating(
-                                                    confirmedRequest.code,
-                                                    action.rating.coerceIn(0, 5)
-                                                )
-                                                db.setEntryRead(confirmedRequest.code, true)
-                                            }
-                                            is BrowserPendingLibraryAction.SetRead -> {
-                                                db.setEntryRead(confirmedRequest.code, action.isRead)
-                                            }
-                                            is BrowserPendingLibraryAction.SetPinned -> {
-                                                db.setEntryPinned(confirmedRequest.code, action.pinned)
-                                            }
-                                            BrowserPendingLibraryAction.ToggleRead -> {
-                                                val local = db.getEntryDetail(confirmedRequest.code)
-                                                db.setEntryRead(
-                                                    confirmedRequest.code,
-                                                    !(local?.isRead ?: false)
-                                                )
-                                            }
-                                            BrowserPendingLibraryAction.TogglePinned -> {
-                                                db.setEntryPinned(
-                                                    confirmedRequest.code,
-                                                    !db.isEntryPinned(confirmedRequest.code)
-                                                )
-                                            }
-                                        }
-                                    }
-                                    val local = db.getEntryDetail(confirmedRequest.code)
-                                    if (local != null) {
-                                        BrowserLocalLibraryState(
-                                            exists = true,
-                                            rating = local.rating.coerceIn(0, 5),
-                                            isRead = local.isRead,
-                                            pinned = db.isEntryPinned(confirmedRequest.code)
-                                        )
-                                    } else {
-                                        BrowserLocalLibraryState(
-                                            exists = false,
-                                            rating = 0,
-                                            isRead = false,
-                                            pinned = false
-                                        )
-                                    }
+                                    library.import(localizedDetail)
+                                    val summary = localizedDetail.summary
+                                    if (library.state(summary).exists) {
+                                        library.apply(summary, confirmedRequest.action)
+                                    } else BrowserLocalLibraryState(false, 0, false, false)
                                 }
                                 listLibraryStates = listLibraryStates.toMutableMap().apply {
                                     put(confirmedRequest.code, refreshed)
@@ -2231,21 +2403,22 @@ internal fun BrowserScreen(
                             val shouldClose = savePrompt.closeAfter
                             scope.launch {
                                 val saved = withContext(Dispatchers.IO) {
-                                    var entryExists = db.getEntryDetail(code) != null
+                                    var summary = selectedSnapshot?.summary
+                                    var entryExists = summary?.let(library::state)?.exists == true
                                     if (!entryExists) {
                                         val detailForImport = selectedSnapshot
                                             ?: runCatching { api.fetchGalleryDetail(code) }.getOrNull()
                                         if (detailForImport != null) {
-                                            db.upsertGallery(toGalleryData(detailForImport))
-                                            entryExists = db.getEntryDetail(code) != null
+                                            library.import(detailForImport)
+                                            summary = detailForImport.summary
+                                            entryExists = library.state(detailForImport.summary).exists
                                         }
                                     }
-                                    if (entryExists) {
-                                        if (savePrompt.isReread) {
+                                    if (entryExists && summary != null) {
+                                        if (summary!!.isNhentai && savePrompt.isReread) {
                                             db.recordEntryRatingSession(code, safeRating, isReread = true)
                                         } else {
-                                            db.setEntryRating(code, safeRating)
-                                            db.setEntryRead(code, true)
+                                            library.apply(summary!!, BrowserPendingLibraryAction.SetRating(safeRating))
                                         }
                                     }
                                     entryExists

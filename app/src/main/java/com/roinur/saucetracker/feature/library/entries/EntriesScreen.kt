@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Icon
 import androidx.compose.material3.SwipeToDismissBox
 import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Text
@@ -28,6 +29,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedback
+import androidx.compose.ui.res.painterResource
+import com.roinur.saucetracker.R
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -110,12 +113,12 @@ internal fun EntrySwipeDismissContainer(
         SwipeToDismissBoxValue.StartToEnd -> SwipeBackgroundSpec(
             label = if (visualPinnedState) "Unpin" else "Pin",
             glyph = "\uD83D\uDCCC",
-            tint = if (visualPinnedState) UNREAD_STATE_COLOR else READ_STATE_COLOR
+            tint = if (visualPinnedState) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onPrimaryContainer
         )
         SwipeToDismissBoxValue.EndToStart -> SwipeBackgroundSpec(
             label = if (visualReadState) "Unread" else "Read",
             glyph = if (visualReadState) "○" else "✓",
-            tint = if (visualReadState) UNREAD_STATE_COLOR else READ_STATE_COLOR
+            tint = if (visualReadState) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onPrimaryContainer
         )
         SwipeToDismissBoxValue.Settled -> SwipeBackgroundSpec("", "", MaterialTheme.colorScheme.onSurfaceVariant)
     }
@@ -135,8 +138,8 @@ internal fun EntrySwipeDismissContainer(
     )
     val backgroundColor by animateColorAsState(
         targetValue = when (visualDirection) {
-            SwipeToDismissBoxValue.StartToEnd -> if (visualPinnedState) UNREAD_STATE_COLOR else MaterialTheme.colorScheme.primaryContainer
-            SwipeToDismissBoxValue.EndToStart -> if (visualReadState) UNREAD_STATE_COLOR else MaterialTheme.colorScheme.primaryContainer
+            SwipeToDismissBoxValue.StartToEnd -> if (visualPinnedState) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.primaryContainer
+            SwipeToDismissBoxValue.EndToStart -> if (visualReadState) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.primaryContainer
             SwipeToDismissBoxValue.Settled -> MaterialTheme.colorScheme.surfaceVariant
         },
         label = "entrySwipeColor"
@@ -166,11 +169,19 @@ internal fun EntrySwipeDismissContainer(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        Text(
-                            text = if (incognitoModeEnabled) "\u26D4" else backgroundSpec.glyph,
-                            style = MaterialTheme.typography.titleMedium,
-                            color = backgroundSpec.tint
-                        )
+                        if (!incognitoModeEnabled && visualDirection == SwipeToDismissBoxValue.StartToEnd) {
+                            Icon(
+                                painter = painterResource(R.drawable.ic_push_pin_24),
+                                contentDescription = null,
+                                tint = backgroundSpec.tint
+                            )
+                        } else {
+                            Text(
+                                text = if (incognitoModeEnabled) "\u26D4" else backgroundSpec.glyph,
+                                style = MaterialTheme.typography.titleMedium,
+                                color = backgroundSpec.tint
+                            )
+                        }
                         Text(
                             text = if (incognitoModeEnabled) "Blocked" else backgroundSpec.label,
                             style = MaterialTheme.typography.labelLarge,

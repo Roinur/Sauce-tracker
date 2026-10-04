@@ -592,7 +592,9 @@ internal fun HeatmapScreen(
                                     selectionSheetState = GraphSelectionSheetState.Tag(node)
                                 },
                                 onEntrySelected = { entry, dominantCircleTags ->
-                                    onSelectGraphEntry(entry.code)
+                                    if (entry.sourceId == "nhentai" && entry.code > 0) {
+                                        onSelectGraphEntry(entry.code)
+                                    }
                                     selectionSheetState = GraphSelectionSheetState.Entry(
                                         entry = entry,
                                         dominantCircleTags = dominantCircleTags,
@@ -728,8 +730,9 @@ internal fun HeatmapScreen(
                                         .fillMaxWidth()
                                         .weight(1f)
                                 ) {
-                                    SelectedEntryDetailCard(
-                                        detail = detail,
+                                    if (detail != null) {
+                                        SelectedEntryDetailCard(
+                                            detail = detail,
                                         analyticsSnapshot = analyticsSnapshot,
                                         onOpenInBrowser = { onOpenEntryInBrowser(sheet.entry.code) },
                                         onOpenCreatorFromDetail = onOpenCreatorFromDetail,
@@ -746,10 +749,39 @@ internal fun HeatmapScreen(
                                         showThumbnails = showThumbnails,
                                         incognitoModeEnabled = incognitoModeEnabled,
                                         headerCenterText = null,
-                                        modifier = Modifier
-                                            .fillMaxSize()
-                                            .verticalScroll(rememberScrollState())
-                                    )
+                                            modifier = Modifier
+                                                .fillMaxSize()
+                                                .verticalScroll(rememberScrollState())
+                                        )
+                                    } else {
+                                        Column(
+                                            modifier = Modifier
+                                                .fillMaxSize()
+                                                .verticalScroll(rememberScrollState())
+                                                .padding(12.dp),
+                                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                                        ) {
+                                            Text(
+                                                if (incognitoModeEnabled) "Private entry" else sheet.entry.title,
+                                                style = MaterialTheme.typography.titleMedium,
+                                                fontWeight = FontWeight.SemiBold
+                                            )
+                                            Text(
+                                                "${sheet.entry.sourceId} · ${sheet.entry.remoteId}",
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                            Text(if (sheet.entry.isRead) "Read" else "Unread")
+                                            Text("Rating: ${sheet.entry.rating.takeIf { it > 0 } ?: "Not rated"}")
+                                            if (!incognitoModeEnabled && sheet.entry.tagNames.isNotEmpty()) {
+                                                Text(sheet.entry.tagNames.joinToString(" · "), style = MaterialTheme.typography.bodySmall)
+                                            }
+                                            Text(
+                                                "Source-specific actions are available from the profile library.",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                    }
                                 }
                             }
                         }

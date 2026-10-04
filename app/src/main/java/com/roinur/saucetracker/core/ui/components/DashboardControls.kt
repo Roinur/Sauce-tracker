@@ -63,6 +63,153 @@ import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
+internal data class ProfilePickerOption(
+    val id: String,
+    val name: String
+)
+
+@Composable
+internal fun SettingsWithProfilePicker(
+    profiles: List<ProfilePickerOption>,
+    activeProfileId: String,
+    incognitoModeEnabled: Boolean,
+    cunnyModeActive: Boolean,
+    onOpenSettings: () -> Unit,
+    onProfileSelected: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var pickerVisible by remember { mutableStateOf(false) }
+    var highlightedIndex by remember { mutableStateOf<Int?>(null) }
+    val visibleProfiles = profiles.ifEmpty { listOf(ProfilePickerOption(activeProfileId, "Main")) }
+    val iconSize = 40.dp
+    val chipSize = 26.dp
+    val chipSpacing = 7.dp
+    val pillPadding = 9.dp
+    val pillGap = 7.dp
+    val pillHeight = 36.dp
+    val pillWidth = (pillPadding * 2) + (chipSize * visibleProfiles.size) +
+        (chipSpacing * (visibleProfiles.size - 1).coerceAtLeast(0))
+    val expandedWidth = iconSize + pillGap + pillWidth
+    val density = androidx.compose.ui.platform.LocalDensity.current
+
+    fun indexForX(x: Float): Int? {
+        val paddingPx = with(density) { pillPadding.toPx() }
+        val chipPx = with(density) { chipSize.toPx() }
+        val slotPx = with(density) { (chipSize + chipSpacing).toPx() }
+        val start = paddingPx
+        val end = start + ((visibleProfiles.size - 1) * slotPx) + chipPx
+        if (x < start || x > end) return null
+        return ((x - start) / slotPx).toInt().coerceIn(0, visibleProfiles.lastIndex)
+    }
+
+    Box(
+        modifier = modifier
+            .width(if (pickerVisible) expandedWidth else iconSize)
+            .height(iconSize)
+            .pointerInput(visibleProfiles, activeProfileId, cunnyModeActive) {
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    if (cunnyModeActive) {
+                        down.consume()
+                        waitForUpOrCancellation()
+                        return@awaitEachGesture
+                    }
+                    val longPress = awaitLongPressOrCancellation(down.id)
+                    if (longPress == null) {
+                        onOpenSettings()
+                        return@awaitEachGesture
+                    }
+                    pickerVisible = true
+                    highlightedIndex = visibleProfiles.indexOfFirst { it.id == activeProfileId }
+                        .takeIf { it >= 0 }
+
+                    var released = false
+                    while (!released) {
+                        val event = awaitPointerEvent()
+                        val change = event.changes.firstOrNull { it.id == down.id }
+                            ?: event.changes.firstOrNull()
+                        if (change == null || !change.pressed) {
+                            released = true
+                        } else {
+                            highlightedIndex = indexForX(change.position.x) ?: highlightedIndex
+                        }
+                    }
+                    highlightedIndex?.takeIf { it in visibleProfiles.indices }?.let { index ->
+                        onProfileSelected(visibleProfiles[index].id)
+                    }
+                    pickerVisible = false
+                    highlightedIndex = null
+                }
+            },
+        contentAlignment = Alignment.CenterEnd
+    ) {
+        if (pickerVisible) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterStart)
+                    .height(pillHeight)
+                    .background(
+                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.96f),
+                        RoundedCornerShape(999.dp)
+                    )
+                    .border(
+                        1.dp,
+                        MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.72f),
+                        RoundedCornerShape(999.dp)
+                    )
+                    .padding(horizontal = pillPadding),
+                contentAlignment = Alignment.CenterStart
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(chipSpacing)
+                ) {
+                    visibleProfiles.forEachIndexed { index, profile ->
+                        val selected = profile.id == activeProfileId
+                        val hovered = highlightedIndex == index
+                        Box(
+                            modifier = Modifier
+                                .size(chipSize)
+                                .clip(CircleShape)
+                                .background(
+                                    if (hovered || selected) MaterialTheme.colorScheme.primaryContainer
+                                    else MaterialTheme.colorScheme.surfaceContainerHighest
+                                )
+                                .border(
+                                    if (hovered) 2.2.dp else 1.2.dp,
+                                    if (hovered || selected) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.outline.copy(alpha = 0.58f),
+                                    CircleShape
+                                ),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = if (incognitoModeEnabled) "•" else profile.name.trim()
+                                    .firstOrNull()?.uppercaseChar()?.toString().orEmpty().ifBlank { "?" },
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        Box(
+            modifier = Modifier
+                .size(iconSize)
+                .clip(CircleShape),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = if (cunnyModeActive) "\uD83E\uDD27" else "⚙",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.SemiBold,
+                cunnyExempt = true
+            )
+        }
+    }
+}
+
 @Composable
 internal fun ImmediateActionText(
     label: String,

@@ -1,12 +1,20 @@
 package com.roinur.saucetracker.feature.slideshow
 
 import com.roinur.saucetracker.*
+import com.roinur.saucetracker.core.media.BitmapMemoryCache
+import com.roinur.saucetracker.core.media.applySourceImageHeaders
+import com.roinur.saucetracker.data.source.MangaDexSourceAdapter
+import com.roinur.saucetracker.data.source.SourceEntryKey
+import com.roinur.saucetracker.data.source.SourceId
+import com.roinur.saucetracker.data.source.SourceReaderContent
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.graphics.BitmapFactory
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -124,8 +132,17 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.OkHttpClient
+import okhttp3.Cache
 import okhttp3.Request
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.File
 import java.util.Locale
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.abs
 import kotlin.math.sqrt
 internal class SlideshowViewModel : androidx.lifecycle.ViewModel() {
@@ -144,21 +161,16 @@ internal sealed interface GalleryPageState {
 }
 
 internal object GalleryPageBitmapCache {
-    private val maxItems = run {
-        val maxMemMb = (Runtime.getRuntime().maxMemory() / (1024 * 1024)).toInt()
-        when {
-            maxMemMb >= 768 -> 240
-            maxMemMb >= 512 -> 180
-            maxMemMb >= 384 -> 140
-            else -> 100
-        }
-    }
-
-    private val bitmaps = object : LinkedHashMap<String, ImageBitmap>(maxItems, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, ImageBitmap>?): Boolean {
-            return size > maxItems
-        }
-    }
+    // MangaDex pages vary drastically in pixel size. An item-count LRU could retain a
+    // hundred full pages on a 256 MB device and eventually crash the process. Bound the
+    // cache by decoded RGB_565 bytes, matching the actual resource being retained.
+    private val bitmapBudgetBytes = (Runtime.getRuntime().maxMemory() / 8L)
+        .coerceIn(24L * 1024L * 1024L, 48L * 1024L * 1024L)
+    private val bitmaps = BitmapMemoryCache<String, ImageBitmap>(
+        maximumBytes = bitmapBudgetBytes,
+        sizeOf = { bitmap -> bitmap.width.toLong() * bitmap.height.toLong() * 2L }
+    )
+    private val inFlight = ConcurrentHashMap<String, CompletableFuture<ImageBitmap?>>()
 
     private val resolvedExtensions = object : LinkedHashMap<String, String>(256, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>?): Boolean {
@@ -166,13 +178,30 @@ internal object GalleryPageBitmapCache {
         }
     }
 
-    @Synchronized
     fun getBitmap(url: String): ImageBitmap? = bitmaps[url]
 
-    @Synchronized
     fun putBitmap(url: String, bitmap: ImageBitmap) {
         if (url.isBlank()) return
-        bitmaps[url] = bitmap
+        bitmaps.put(url, bitmap)
+    }
+
+    /** Coalesces Compose, read-ahead and retry requests for the same immutable page URL. */
+    fun loadOnce(url: String, loader: () -> ImageBitmap?): ImageBitmap? {
+        getBitmap(url)?.let { return it }
+        val mine = CompletableFuture<ImageBitmap?>()
+        val existing = inFlight.putIfAbsent(url, mine)
+        if (existing != null) return runCatching { existing.get() }.getOrNull()
+        return try {
+            val loaded = loader()
+            if (loaded != null) putBitmap(url, loaded)
+            mine.complete(loaded)
+            loaded
+        } catch (error: Throwable) {
+            mine.completeExceptionally(error)
+            throw error
+        } finally {
+            inFlight.remove(url, mine)
+        }
     }
 
     @Synchronized
@@ -191,8 +220,206 @@ internal object GalleryPageBitmapCache {
     }
 }
 
+internal val galleryReadAheadExecutor = Executors.newFixedThreadPool(5) { runnable ->
+    Thread(runnable, "sauce-reader-ahead").apply { isDaemon = true }
+}
+
+internal val galleryVisiblePageExecutor = Executors.newSingleThreadExecutor { runnable ->
+    Thread(runnable, "sauce-reader-visible").apply {
+        isDaemon = true
+        priority = Thread.MAX_PRIORITY
+    }
+}
+
+private object MangaDexReaderManifestDiskCache {
+    private const val FORMAT_VERSION = 1
+    private const val MAX_AGE_MS = 30L * 24L * 60L * 60L * 1000L
+    private const val MAX_FILES = 256
+
+    @Synchronized
+    fun load(context: Context, remoteId: String, requestedChapterId: String): SourceReaderContent? {
+        val file = file(context, remoteId, requestedChapterId)
+        if (!file.isFile || file.length() !in 1..1_048_576) return null
+        if (System.currentTimeMillis() - file.lastModified() > MAX_AGE_MS) {
+            file.delete()
+            return null
+        }
+        return runCatching {
+            val root = JSONObject(file.readText())
+            if (root.optInt("version") != FORMAT_VERSION || root.optString("remoteId") != remoteId) return null
+            val chapterId = root.optString("chapterId").trim()
+            if (chapterId.isBlank() || (requestedChapterId.isNotBlank() && chapterId != requestedChapterId)) return null
+            val pages = root.optJSONArray("pages").stringValues()
+            val fallbacks = root.optJSONArray("fallbacks").stringValues()
+            if (pages.isEmpty() && fallbacks.isEmpty()) return null
+            SourceReaderContent(
+                entryKey = SourceEntryKey(SourceId("mangadex"), remoteId),
+                chapterId = chapterId,
+                chapterLabel = root.optString("chapterLabel"),
+                chapterTitle = root.optString("chapterTitle"),
+                language = root.optString("language"),
+                scanlationGroups = root.optJSONArray("groups").stringValues(),
+                pageUrls = pages,
+                dataSaverPageUrls = fallbacks
+            )
+        }.getOrNull()
+    }
+
+    @Synchronized
+    fun save(context: Context, remoteId: String, requestedChapterId: String, content: SourceReaderContent) {
+        if (content.chapterId.isBlank() || (content.pageUrls.isEmpty() && content.dataSaverPageUrls.isEmpty())) return
+        val root = JSONObject()
+            .put("version", FORMAT_VERSION)
+            .put("remoteId", remoteId)
+            .put("chapterId", content.chapterId)
+            .put("chapterLabel", content.chapterLabel)
+            .put("chapterTitle", content.chapterTitle)
+            .put("language", content.language)
+            .put("groups", JSONArray(content.scanlationGroups))
+            .put("pages", JSONArray(content.pageUrls))
+            .put("fallbacks", JSONArray(content.dataSaverPageUrls))
+        write(file(context, remoteId, content.chapterId), root.toString())
+        if (requestedChapterId.isBlank()) write(file(context, remoteId, ""), root.toString())
+        trim(context)
+    }
+
+    @Synchronized
+    fun invalidate(context: Context, remoteId: String, chapterId: String) {
+        file(context, remoteId, chapterId).delete()
+        file(context, remoteId, "").delete()
+    }
+
+    private fun file(context: Context, remoteId: String, chapterId: String): File {
+        val directory = context.cacheDir.resolve("mangadex-reader-manifests-v1").apply { mkdirs() }
+        val rawKey = if (chapterId.isBlank()) "entry-$remoteId" else "chapter-$chapterId"
+        val safeKey = rawKey.replace(Regex("[^A-Za-z0-9._-]"), "_")
+        return directory.resolve("$safeKey.json")
+    }
+
+    private fun write(target: File, payload: String) {
+        val temporary = target.resolveSibling("${target.name}.tmp")
+        temporary.writeText(payload)
+        if (!temporary.renameTo(target)) {
+            target.writeText(payload)
+            temporary.delete()
+        }
+    }
+
+    private fun trim(context: Context) {
+        val files = context.cacheDir.resolve("mangadex-reader-manifests-v1")
+            .listFiles { candidate -> candidate.extension == "json" }
+            .orEmpty()
+            .sortedByDescending(File::lastModified)
+        files.drop(MAX_FILES).forEach(File::delete)
+    }
+
+    private fun JSONArray?.stringValues(): List<String> = buildList {
+        if (this@stringValues == null) return@buildList
+        for (index in 0 until length()) {
+            optString(index).trim().takeIf(String::isNotBlank)?.let(::add)
+        }
+    }
+}
+
+/**
+ * Starts MangaDex At-Home resolution before the Slideshow Activity has finished opening.
+ * Browser, Library and Slideshow all join the same future and then the same page bitmap
+ * requests, so a chapter tap never creates duplicate manifest or image work.
+ */
+internal object MangaDexReaderWarmup {
+    private val manifestExecutor = Executors.newFixedThreadPool(2) { runnable ->
+        Thread(runnable, "sauce-reader-manifest").apply { isDaemon = true }
+    }
+    private val inFlight = ConcurrentHashMap<String, CompletableFuture<SourceReaderContent>>()
+    private val measuredOpenStartedAt = AtomicLong(0L)
+    private val measuredFirstPageUrl = AtomicReference("")
+
+    fun start(
+        context: Context,
+        adapter: MangaDexSourceAdapter,
+        remoteId: String,
+        chapterId: String?,
+        startPageIndex: Int = 0,
+        measureOpen: Boolean = false,
+        prefetchPages: Boolean = true
+    ): CompletableFuture<SourceReaderContent> {
+        val safeChapterId = chapterId?.trim().orEmpty()
+        val key = "${remoteId.trim()}|$safeChapterId"
+        val created = CompletableFuture<SourceReaderContent>()
+        val existing = inFlight.putIfAbsent(key, created)
+        if (existing != null) return existing
+
+        if (measureOpen) {
+            measuredOpenStartedAt.set(android.os.SystemClock.elapsedRealtime())
+            measuredFirstPageUrl.set("")
+        }
+
+        val appContext = context.applicationContext
+        manifestExecutor.execute {
+            val startedAt = android.os.SystemClock.elapsedRealtime()
+            try {
+                val cachedReader = MangaDexReaderManifestDiskCache.load(appContext, remoteId, safeChapterId)
+                val reader = cachedReader ?: adapter.fetchReaderContent(remoteId, safeChapterId.ifBlank { null }).also {
+                    MangaDexReaderManifestDiskCache.save(appContext, remoteId, safeChapterId, it)
+                }
+                val pages = reader.pageUrls.ifEmpty { reader.dataSaverPageUrls }
+                val fallbacks = if (reader.pageUrls.isNotEmpty()) reader.dataSaverPageUrls else emptyList()
+                // Queue the visible page first. Completing the manifest future afterwards lets
+                // Compose join the exact same in-flight bitmap request instead of duplicating it.
+                val safeStartIndex = startPageIndex.coerceIn(0, (pages.size - 1).coerceAtLeast(0))
+                if (measureOpen) measuredFirstPageUrl.set(pages.getOrNull(safeStartIndex).orEmpty())
+                if (prefetchPages) {
+                    prefetchExplicitGalleryPages(
+                        context = appContext,
+                        pageUris = pages,
+                        fallbackPageUris = fallbacks,
+                        currentIndex = safeStartIndex,
+                        includeCurrent = true
+                    )
+                }
+                created.complete(reader)
+                Log.d(
+                    "SauceTrackerReaderPerf",
+                    "MangaDex manifest ready in ${android.os.SystemClock.elapsedRealtime() - startedAt}ms; pages=${pages.size}; diskCache=${cachedReader != null}"
+                )
+            } catch (error: Throwable) {
+                created.completeExceptionally(error)
+            } finally {
+                inFlight.remove(key, created)
+            }
+        }
+        return created
+    }
+
+    fun markPageReady(url: String) {
+        val expected = measuredFirstPageUrl.get()
+        if (expected.isBlank() || url != expected) return
+        val startedAt = measuredOpenStartedAt.getAndSet(0L)
+        if (startedAt <= 0L || !measuredFirstPageUrl.compareAndSet(expected, "")) return
+        Log.d(
+            "SauceTrackerReaderPerf",
+            "MangaDex selected page ready in ${android.os.SystemClock.elapsedRealtime() - startedAt}ms"
+        )
+    }
+
+    fun invalidate(context: Context, remoteId: String, chapterId: String) {
+        MangaDexReaderManifestDiskCache.invalidate(context.applicationContext, remoteId, chapterId)
+    }
+}
+
 internal val slideshowHttpClient: OkHttpClient by lazy {
     HttpClientFactory.create(HttpClientProfile.SLIDESHOW)
+}
+
+private object ReaderPageHttpClient {
+    @Volatile private var client: OkHttpClient? = null
+
+    fun get(context: Context): OkHttpClient = client ?: synchronized(this) {
+        client ?: HttpClientFactory.create(
+            HttpClientProfile.SLIDESHOW,
+            Cache(context.applicationContext.cacheDir.resolve("reader-http-v1"), 256L * 1024L * 1024L)
+        ).also { client = it }
+    }
 }
 
 internal fun normalizeImageExtension(raw: String?): String {
@@ -264,24 +491,43 @@ internal fun fetchGalleryPageBitmap(
     return null
 }
 
-internal fun fetchGalleryPageBitmapOnce(url: String): ImageBitmap? {
+internal fun fetchGalleryPageBitmapOnce(
+    url: String,
+    client: OkHttpClient = slideshowHttpClient
+): ImageBitmap? {
+    val host = runCatching { Uri.parse(url).host.orEmpty() }.getOrDefault("")
     val request = Request.Builder()
         .url(url)
-        .header(
-            "User-Agent",
-            "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36"
-        )
-        .header("Accept", "image/avif,image/webp,image/apng,image/*,*/*;q=0.8")
-        .header("Referer", "https://nhentai.net/")
+        .applySourceImageHeaders(url)
         .build()
 
-    return slideshowHttpClient.newCall(request).execute().use { response ->
-        if (!response.isSuccessful) return null
-        val bytes = response.body?.bytes() ?: return null
+    return client.newCall(request).execute().use { response ->
+        if (!response.isSuccessful) {
+            Log.w("SauceTrackerSlideshow", "Image request failed: host=$host status=${response.code}")
+            return null
+        }
+        val body = response.body
+        if (body == null) {
+            Log.w("SauceTrackerSlideshow", "Image response was empty: host=$host status=${response.code}")
+            return null
+        }
         val options = BitmapFactory.Options().apply {
             inPreferredConfig = android.graphics.Bitmap.Config.RGB_565
         }
-        val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options) ?: return null
+        // Decode directly from OkHttp's stream. body.bytes() temporarily retained the full
+        // compressed MangaDex page beside its decoded bitmap and amplified peak heap usage.
+        val bitmap = body.byteStream().buffered().use { input ->
+            BitmapFactory.decodeStream(input, null, options)
+        }
+        if (bitmap == null) {
+            Log.w(
+                "SauceTrackerSlideshow",
+                "Image decode failed: host=$host type=${response.header("Content-Type").orEmpty()} length=${body.contentLength()}"
+            )
+            return null
+        }
         bitmap.asImageBitmap()
     }
 }
+
+internal fun readerPageHttpClient(context: Context): OkHttpClient = ReaderPageHttpClient.get(context)

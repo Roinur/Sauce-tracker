@@ -199,16 +199,13 @@ internal fun <T> SelectionDialog(
                     ) {
                         Text(
                             text = optionLabel(option),
-                            style = MaterialTheme.typography.bodyMedium
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = if (selected) {
+                                MaterialTheme.colorScheme.onPrimaryContainer
+                            } else {
+                                MaterialTheme.colorScheme.onSurface
+                            }
                         )
-                        if (selected) {
-                            Text(
-                                text = "Selected",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.primary,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                        }
                     }
                 }
                 Row(

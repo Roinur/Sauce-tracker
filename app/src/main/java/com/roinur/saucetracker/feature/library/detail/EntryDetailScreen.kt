@@ -7,6 +7,8 @@ import com.roinur.saucetracker.core.media.*
 import com.roinur.saucetracker.data.backup.*
 import com.roinur.saucetracker.data.downloads.*
 import com.roinur.saucetracker.data.database.entity.RelatedEntryEntity
+import com.roinur.saucetracker.data.source.SourceChapter
+import com.roinur.saucetracker.data.database.SourceChapterProgress
 import com.roinur.saucetracker.data.backup.*
 import com.roinur.saucetracker.data.downloads.*
 import android.Manifest
@@ -318,6 +320,9 @@ import kotlin.math.roundToInt
 @Composable
 internal fun EntryCodeLine(
     code: Int,
+    displayId: String = code.toString(),
+    idLabel: String = "Code",
+    showValue: Boolean = true,
     showSessionNewBadge: Boolean,
     incognitoModeEnabled: Boolean,
     textStyle: TextStyle,
@@ -331,7 +336,7 @@ internal fun EntryCodeLine(
         horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         Text(
-            text = "Code: $code",
+            text = if (showValue) "$idLabel: $displayId" else idLabel,
             modifier = Modifier.privacyObfuscate(
                 enabled = incognitoModeEnabled,
                 overlayColor = privacyOverlay
@@ -361,6 +366,36 @@ internal fun EntryCodeLine(
                     color = MaterialTheme.colorScheme.onTertiaryContainer,
                     fontWeight = FontWeight.Bold
                 )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SourceChapterPreview(
+    chapter: SourceChapter,
+    obscure: Boolean,
+    modifier: Modifier = Modifier
+) {
+    val shape = RoundedCornerShape(8.dp)
+    val url = chapter.previewUrl
+    if (!url.isNullOrBlank()) {
+        ThumbnailImage(
+            thumbnailUrl = url,
+            contentDescription = "${chapter.displayTitle} preview",
+            obscure = obscure,
+            preferLowRes = true,
+            contentScale = ContentScale.Crop,
+            modifier = modifier.clip(shape)
+        )
+    } else {
+        Surface(
+            shape = shape,
+            color = MaterialTheme.colorScheme.surfaceVariant,
+            modifier = modifier
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Text("•", color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
     }
@@ -399,6 +434,12 @@ internal fun SelectedEntryDetailCard(
     onOpenRelatedEntry: (Int) -> Unit = onOpenSeriesEntry,
     onOpenCreatorInBrowser: (String, String) -> Unit,
     onSelectedThumbnailClick: (Int, String, String) -> Unit,
+    chapters: List<SourceChapter> = emptyList(),
+    chapterProgress: Map<String, SourceChapterProgress> = emptyMap(),
+    resumeChapterId: String? = null,
+    chapterResumeLoading: Boolean = false,
+    chaptersLoading: Boolean = false,
+    onOpenChapter: (String) -> Unit = {},
     showThumbnails: Boolean,
     incognitoModeEnabled: Boolean,
     experimentalLazyMetadata: Boolean = false,
@@ -411,6 +452,15 @@ internal fun SelectedEntryDetailCard(
     var expandedHistoryRow by remember(detail?.code) { mutableStateOf<EntryRatingHistoryRow?>(null) }
     var editingHistoryRating by remember(detail?.code) { mutableStateOf(0) }
     var detailsExpanded by remember(detail?.code) { mutableStateOf(false) }
+    var chaptersAscending by remember(detail?.sourceId, detail?.remoteId) { mutableStateOf(false) }
+    val displayedChapters = remember(chapters, chaptersAscending) {
+        com.roinur.saucetracker.data.source.orderedSourceChapters(chapters, chaptersAscending)
+    }
+    val chapterListPosition = com.roinur.saucetracker.core.ui.components.rememberResumeChapterListPosition(
+        identity = "${detail?.sourceId}:${detail?.remoteId}",
+        chapters = displayedChapters, resumeChapterId = resumeChapterId,
+        loading = chaptersLoading || chapterResumeLoading
+    )
     LaunchedEffect(incognitoModeEnabled) {
         if (incognitoModeEnabled) {
             showRatingHistoryDialog = false
@@ -705,8 +755,8 @@ internal fun SelectedEntryDetailCard(
                 if (showThumbnails && detail.thumbnailUrl.isNotBlank()) {
                     ThumbnailImage(
                         thumbnailUrl = detail.thumbnailUrl,
-                        backupCode = detail.code,
-                        contentDescription = "Large cover for code ${detail.code}",
+                        backupCode = detail.code.takeIf { detail.isNhentai },
+                        contentDescription = if (detail.isNhentai) "Large cover for ${detail.displayId}" else "Large MangaDex cover",
                         obscure = incognitoModeEnabled,
                         onClick = {
                             onSelectedThumbnailClick(
@@ -730,7 +780,7 @@ internal fun SelectedEntryDetailCard(
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         Text(
-                            "Code:",
+                            if (detail.isNhentai) "Code:" else detail.sourceId.replaceFirstChar { it.uppercase() },
                             modifier = Modifier.privacyObfuscate(
                                 enabled = incognitoModeEnabled,
                                 overlayColor = privacyOverlay
@@ -744,7 +794,7 @@ internal fun SelectedEntryDetailCard(
                             contentPadding = PaddingValues(horizontal = 0.dp, vertical = 0.dp)
                         ) {
                             Text(
-                                text = detail.code.toString(),
+                                text = if (detail.isNhentai) detail.displayId else "Copy ID",
                                 modifier = Modifier.privacyObfuscate(
                                     enabled = incognitoModeEnabled,
                                     overlayColor = privacyOverlay
@@ -865,22 +915,28 @@ internal fun SelectedEntryDetailCard(
                     )
                 )
                 Text(
-                    text = "Pages: ${detail.numPages}",
+                    text = if (!detail.isNhentai && chapters.isNotEmpty()) {
+                        "Chapters: ${chapters.size}"
+                    } else {
+                        "${detail.unitLabel.replaceFirstChar { it.uppercase() }}: ${detail.numPages}"
+                    },
                     style = detailBodyStyle,
                     modifier = Modifier.privacyObfuscate(
                         enabled = incognitoModeEnabled,
                         overlayColor = privacyOverlay
                     )
                 )
-                Text(
-                    text = buildEtaTextForEntry(detail.numPages, analyticsSnapshot),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.privacyObfuscate(
-                        enabled = incognitoModeEnabled,
-                        overlayColor = privacyOverlay
+                if (detail.isNhentai) {
+                    Text(
+                        text = buildEtaTextForEntry(detail.numPages, analyticsSnapshot),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.privacyObfuscate(
+                            enabled = incognitoModeEnabled,
+                            overlayColor = privacyOverlay
+                        )
                     )
-                )
+                }
                 if (!enableLibraryRelatedNavigation) {
                     Text(
                         text = "Uploaded: ${detail.uploadDate.ifBlank { "-" }}",
@@ -1022,6 +1078,90 @@ internal fun SelectedEntryDetailCard(
                         )
                     }
                 }
+                if (!detail.isNhentai) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    ChapterListHeader(
+                        count = chapters.size, loading = chaptersLoading,
+                        ascending = chaptersAscending, onToggleOrder = { chaptersAscending = !chaptersAscending },
+                        enabled = !incognitoModeEnabled,
+                        style = detailTitleStyle,
+                    )
+                    when {
+                        chaptersLoading || chapterResumeLoading -> LinearProgressIndicator(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(6.dp)
+                                .clip(RoundedCornerShape(999.dp))
+                        )
+                        chapters.isEmpty() -> Text(
+                            text = "No readable chapters found.",
+                            style = detailBodyStyle,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        else -> LazyColumn(
+                            state = chapterListPosition.state,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .graphicsLayer { alpha = if (chapterListPosition.ready) 1f else 0f }
+                                .heightIn(max = if (compactContent) 300.dp else 440.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            items(displayedChapters, key = { chapter -> chapter.id }) { chapter ->
+                                val chapterShape = RoundedCornerShape(12.dp)
+                                val progress = chapterProgress[chapter.id]
+                                Surface(shape = chapterShape, color = MaterialTheme.colorScheme.surfaceContainer,
+                                    modifier = Modifier.fillMaxWidth().clip(chapterShape).clickable(enabled = !incognitoModeEnabled) { onOpenChapter(chapter.id) }) {
+                                    Box(modifier = Modifier.fillMaxWidth().clip(chapterShape)) {
+                                        if (!incognitoModeEnabled && (progress?.fraction ?: 0f) > 0f) {
+                                            ReadingProgressBleedGlow(
+                                                fraction = progress!!.fraction,
+                                                tint = MaterialTheme.colorScheme.primary,
+                                                cornerRadius = 12.dp,
+                                                modifier = Modifier.matchParentSize().clip(chapterShape)
+                                            )
+                                        }
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                        ) {
+                                            SourceChapterPreview(
+                                                chapter = chapter,
+                                                obscure = incognitoModeEnabled,
+                                                modifier = Modifier.size(38.dp)
+                                            )
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Text(
+                                                    text = chapter.displayTitle,
+                                                    style = detailBodyStyle,
+                                                    fontWeight = if (progress?.completed == true) FontWeight.Normal else FontWeight.Medium,
+                                                    color = if (progress?.completed == true) MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f) else MaterialTheme.colorScheme.onSurface,
+                                                    maxLines = 2,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                                val chapterMeta = buildList {
+                                                    chapter.language.takeIf(String::isNotBlank)?.let(::add)
+                                                    chapter.scanlationGroups.firstOrNull()?.takeIf(String::isNotBlank)?.let(::add)
+                                                    chapter.pageCount.takeIf { it > 0 }?.let { add("$it pages") }
+                                                }.joinToString(" · ")
+                                                if (chapterMeta.isNotBlank()) {
+                                                    Text(
+                                                        text = chapterMeta,
+                                                        style = MaterialTheme.typography.bodySmall,
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                        maxLines = 1,
+                                                        overflow = TextOverflow.Ellipsis
+                                                    )
+                                                }
+                                            }
+                                            Text("›", style = MaterialTheme.typography.titleLarge)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 if (!enableLibraryRelatedNavigation) {
                     LegacyEntryMetadata(
                         detail = detail,
@@ -1058,6 +1198,12 @@ internal fun SelectedEntryDetailCard(
                         incognitoModeEnabled = incognitoModeEnabled
                     )
                 }
+                com.roinur.saucetracker.feature.experimentalgallery.EntryScreenshotsLink(
+                    sourceId = detail.sourceId, remoteId = detail.remoteId,
+                    title = detail.title, chapters = chapters,
+                    incognitoModeEnabled = incognitoModeEnabled,
+                    labelStyle = detailBodyStyle
+                )
                 if (enableLibraryRelatedNavigation) {
                     EntryDetailsSection(
                         detail = detail,
@@ -1067,7 +1213,7 @@ internal fun SelectedEntryDetailCard(
                         incognitoModeEnabled = incognitoModeEnabled,
                         privacyOverlay = privacyOverlay
                     )
-                    RelatedEntrySection(
+                    if (detail.isNhentai) RelatedEntrySection(
                         seriesNeighbors = seriesNeighbors,
                         state = relatedEntriesState,
                         requestedMode = relatedEntryMode,
@@ -1198,7 +1344,11 @@ private fun LegacyEntryMetadata(
         modifier = privacyModifier
     )
     Text(
-        text = "URL: ${detail.sourceUrl}",
+        text = if (detail.isNhentai) {
+            "URL: ${detail.sourceUrl}"
+        } else {
+            "URL: MangaDex title page"
+        },
         style = detailBodyStyle,
         modifier = privacyModifier
     )
@@ -1596,8 +1746,8 @@ internal fun SelectedEntrySummarySkeleton(
     if (showThumbnails && summary.thumbnailUrl.isNotBlank()) {
         ThumbnailImage(
             thumbnailUrl = summary.thumbnailUrl,
-            backupCode = summary.code,
-            contentDescription = "Large cover for code ${summary.code}",
+            backupCode = summary.code.takeIf { summary.isNhentai },
+            contentDescription = if (summary.isNhentai) "Large cover for ${summary.displayId}" else "Large MangaDex cover",
             obscure = incognitoModeEnabled,
             onClick = {
                 onSelectedThumbnailClick(
@@ -1621,7 +1771,7 @@ internal fun SelectedEntrySummarySkeleton(
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             Text(
-                "Code:",
+                if (summary.isNhentai) "Code:" else summary.sourceId.replaceFirstChar { it.uppercase() },
                 modifier = Modifier.privacyObfuscate(
                     enabled = incognitoModeEnabled,
                     overlayColor = privacyOverlay
@@ -1635,7 +1785,7 @@ internal fun SelectedEntrySummarySkeleton(
                 contentPadding = PaddingValues(horizontal = 0.dp, vertical = 0.dp)
             ) {
                 Text(
-                    text = summary.code.toString(),
+                    text = if (summary.isNhentai) summary.displayId else "Copy ID",
                     modifier = Modifier.privacyObfuscate(
                         enabled = incognitoModeEnabled,
                         overlayColor = privacyOverlay
@@ -1667,7 +1817,7 @@ internal fun SelectedEntrySummarySkeleton(
         )
     )
     Text(
-        text = "Pages: ${if (summary.numPages > 0) summary.numPages.toString() else "-"}",
+        text = "${summary.unitLabel.replaceFirstChar { it.uppercase() }}: ${if (summary.numPages > 0) summary.numPages.toString() else "-"}",
         style = detailBodyStyle,
         modifier = Modifier.privacyObfuscate(
             enabled = incognitoModeEnabled,

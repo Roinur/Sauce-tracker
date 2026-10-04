@@ -132,9 +132,9 @@ class TrendModelsTest {
 
     @Test
     fun `reading breakdown totals unique entries and rereads`() {
-        val breakdown = ReadCountBreakdown(uniqueEntries = 481, rereads = 1)
+        val breakdown = ReadCountBreakdown(uniqueEntries = 481, chaptersRead = 18, rereads = 1)
 
-        assertEquals(482, breakdown.total)
+        assertEquals(500, breakdown.total)
     }
 
     private fun series(vararg points: TrendPoint) = TrendSeries(

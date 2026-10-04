@@ -29,6 +29,7 @@ internal fun DashboardCreatorsSection(
         onCreatorClick = vm::toggleCreatorExpanded,
         onOpenCreator = vm::openCreatorPreviewInBrowser,
         isSubscribed = { creator -> vm.isRouteSubscribed(creator.type, creator.name) },
+        canSubscribe = { creator -> vm.canSubscribeRoute(creator.type) },
         onToggleSubscription = { creator ->
             val wasSubscribed = vm.isRouteSubscribed(creator.type, creator.name)
             vm.toggleCreatorSubscription(creator.type, creator.name)

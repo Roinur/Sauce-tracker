@@ -2,6 +2,7 @@ package com.roinur.saucetracker.feature.browser
 
 import com.roinur.saucetracker.*
 import com.roinur.saucetracker.data.backup.*
+import com.roinur.saucetracker.data.source.withMangaDexLanguage
 import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -178,8 +179,20 @@ internal data class BrowserGallerySummary(
     val mediaId: Long,
     val coverExt: String,
     val numPages: Int,
-    val uploadDate: String
-)
+    val uploadDate: String,
+    val sourceId: String = "nhentai",
+    val remoteId: String = code.toString(),
+    val canonicalUrl: String = "",
+    val thumbnailUrl: String = "",
+    val unitLabel: String = "pages",
+    val sourceEntry: com.roinur.saucetracker.data.source.SourceEntry? = null
+) {
+    val isNhentai: Boolean get() = sourceId == "nhentai"
+    val displayId: String get() = if (isNhentai) code.toString() else remoteId
+    val coverUrls: List<String>
+        get() = thumbnailUrl.takeIf(String::isNotBlank)?.let(::listOf)
+            ?: buildCoverThumbnailUrls(mediaId, coverExt)
+}
 
 internal data class BrowserPageThumb(
     val pageNumber: Int,
@@ -197,8 +210,24 @@ internal data class BrowserGalleryDetail(
     val tagCountsByKey: Map<String, Int>,
     val pageThumbs: List<BrowserPageThumb>,
     val comments: List<BrowserGalleryComment>,
-    val relatedGalleries: List<BrowserGallerySummary> = emptyList()
+    val relatedGalleries: List<BrowserGallerySummary> = emptyList(),
+    val readerContent: com.roinur.saucetracker.data.source.SourceReaderContent? = null,
+    val chapters: List<com.roinur.saucetracker.data.source.SourceChapter> = emptyList(),
+    val availableLanguages: List<String> = emptyList(),
+    val selectedLanguage: String = ""
 )
+
+internal fun BrowserGalleryDetail.withMangaDexLanguage(language: String): BrowserGalleryDetail {
+    val entry = summary.sourceEntry?.withMangaDexLanguage(language) ?: return this
+    return copy(
+        summary = summary.copy(remoteId = entry.key.remoteId, canonicalUrl = entry.canonicalUrl, sourceEntry = entry),
+        tagsByType = tagsByType.toMutableMap().apply {
+            put("language", listOf(com.roinur.saucetracker.data.source.mangaDexLanguageDisplayName(language)))
+        },
+        selectedLanguage = language,
+        chapters = emptyList()
+    )
+}
 
 internal data class BrowserDuplicateComparisonState(
     val row: BrowserGallerySummary,
@@ -319,6 +348,7 @@ internal data class BrowserLocalLibraryState(
 )
 
 internal sealed interface BrowserPendingLibraryAction {
+    data object ImportOnly : BrowserPendingLibraryAction
     data class SetRating(val rating: Int) : BrowserPendingLibraryAction
     data class SetRead(val isRead: Boolean) : BrowserPendingLibraryAction
     data class SetPinned(val pinned: Boolean) : BrowserPendingLibraryAction

@@ -190,6 +190,10 @@ internal fun GalleryCodeBrowserTheme(
     content: @Composable () -> Unit
 ) {
     val context = LocalContext.current
+    val extraDark = remember(context) {
+        com.roinur.saucetracker.core.preferences.SaucePreferences.from(context)
+            .boolean(com.roinur.saucetracker.core.preferences.KEY_EXTRA_DARK)
+    }
     val systemDark = isSystemInDarkTheme()
     val useDark = when (themeMode) {
         ThemeMode.SYSTEM -> systemDark
@@ -244,13 +248,15 @@ internal fun GalleryCodeBrowserTheme(
         incognitoScheme
     } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
         applyAccentMode(
-            baseScheme = if (useDark) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context),
+            baseScheme = com.roinur.saucetracker.core.ui.theme.applyExtraDarkMode(
+                if (useDark) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context), useDark, extraDark
+            ),
             accentMode = accentMode,
             isDark = useDark
         )
     } else {
         applyAccentMode(
-            baseScheme = fallbackScheme,
+            baseScheme = com.roinur.saucetracker.core.ui.theme.applyExtraDarkMode(fallbackScheme, useDark, extraDark),
             accentMode = accentMode,
             isDark = useDark
         )
@@ -488,14 +494,14 @@ internal fun GallerySummaryCard(
     }
     val resolvedSwipeTint = when (visualDirection) {
         SwipeToDismissBoxValue.StartToEnd -> if (visualPinnedState) {
-            GALLERY_BROWSER_NEGATIVE_ACTION_COLOR
+            MaterialTheme.colorScheme.onErrorContainer
         } else {
-            GALLERY_BROWSER_POSITIVE_ACTION_COLOR
+            MaterialTheme.colorScheme.onPrimaryContainer
         }
         SwipeToDismissBoxValue.EndToStart -> if (visualReadState) {
-            GALLERY_BROWSER_NEGATIVE_ACTION_COLOR
+            MaterialTheme.colorScheme.onSecondaryContainer
         } else {
-            GALLERY_BROWSER_POSITIVE_ACTION_COLOR
+            MaterialTheme.colorScheme.onPrimaryContainer
         }
         SwipeToDismissBoxValue.Settled -> MaterialTheme.colorScheme.onSurfaceVariant
     }
@@ -506,12 +512,12 @@ internal fun GallerySummaryCard(
     val resolvedBackgroundColor by androidx.compose.animation.animateColorAsState(
         targetValue = when (visualDirection) {
             SwipeToDismissBoxValue.StartToEnd -> if (visualPinnedState) {
-                GALLERY_BROWSER_NEGATIVE_ACTION_COLOR
+                MaterialTheme.colorScheme.errorContainer
             } else {
                 MaterialTheme.colorScheme.primaryContainer
             }
             SwipeToDismissBoxValue.EndToStart -> if (visualReadState) {
-                GALLERY_BROWSER_NEGATIVE_ACTION_COLOR
+                MaterialTheme.colorScheme.secondaryContainer
             } else {
                 MaterialTheme.colorScheme.primaryContainer
             }
@@ -556,11 +562,19 @@ internal fun GallerySummaryCard(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        Text(
-                            text = if (incognitoModeEnabled) "\u26D4" else resolvedSwipeGlyph,
-                            style = MaterialTheme.typography.titleMedium,
-                            color = resolvedSwipeTint
-                        )
+                        if (!incognitoModeEnabled && visualDirection == SwipeToDismissBoxValue.StartToEnd) {
+                            Icon(
+                                painter = painterResource(R.drawable.ic_push_pin_24),
+                                contentDescription = null,
+                                tint = resolvedSwipeTint
+                            )
+                        } else {
+                            Text(
+                                text = if (incognitoModeEnabled) "\u26D4" else resolvedSwipeGlyph,
+                                style = MaterialTheme.typography.titleMedium,
+                                color = resolvedSwipeTint
+                            )
+                        }
                         Text(
                             text = if (incognitoModeEnabled) "Blocked" else swipeLabel,
                             style = MaterialTheme.typography.labelLarge,
@@ -670,9 +684,9 @@ internal fun GallerySummaryCard(
                             .height(130.dp)
                     ) {
                         RemoteThumbnail(
-                            urls = buildCoverThumbnailUrls(row.mediaId, row.coverExt),
-                            backupCode = row.code,
-                            contentDescription = "Cover for code ${row.code}",
+                            urls = row.coverUrls,
+                            backupCode = row.code.takeIf { row.isNhentai },
+                            contentDescription = if (row.isNhentai) "Cover for ${row.displayId}" else "MangaDex cover",
                             obscure = incognitoModeEnabled,
                             onClick = onOpenSlideshow,
                             modifier = Modifier.matchParentSize()
@@ -725,7 +739,7 @@ internal fun GallerySummaryCard(
                                     verticalArrangement = Arrangement.spacedBy(4.dp)
                                 ) {
                                     Text(
-                                        text = "Code: ${row.code}",
+                                        text = if (row.isNhentai) "Code: ${row.displayId}" else "MangaDex",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                         modifier = Modifier.browserPrivacyObfuscate(
@@ -747,7 +761,7 @@ internal fun GallerySummaryCard(
                                     }
                                     if (row.numPages > 0) {
                                         Text(
-                                            text = "Pages: ${row.numPages}",
+                                            text = "${row.unitLabel.replaceFirstChar { it.uppercase() }}: ${row.numPages}",
                                             style = MaterialTheme.typography.bodySmall,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                                             modifier = Modifier.browserPrivacyObfuscate(

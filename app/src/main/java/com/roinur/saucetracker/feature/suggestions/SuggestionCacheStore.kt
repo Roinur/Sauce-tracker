@@ -98,6 +98,9 @@ internal class SuggestionCacheStore(private val preferences: SharedPreferences) 
                 put(
                     JSONObject()
                         .put("code", row.code)
+                        .put("sourceId", row.sourceId)
+                        .put("remoteId", row.remoteId)
+                        .put("unitLabel", row.unitLabel)
                         .put("title", row.title)
                         .put("numPages", row.numPages)
                         .put("uploadDate", row.uploadDate)
@@ -129,7 +132,10 @@ internal class SuggestionCacheStore(private val preferences: SharedPreferences) 
                         },
                         score = item.optDouble("score", 0.0).toFloat(),
                         whySuggestedReason = item.optString("whySuggestedReason", ""),
-                        duplicateHint = null
+                        duplicateHint = null,
+                        sourceId = item.optString("sourceId", "nhentai"),
+                        remoteId = item.optString("remoteId", code.toString()),
+                        unitLabel = item.optString("unitLabel", "pages")
                     )
                 )
             }

@@ -165,19 +165,60 @@ private enum class ExperimentalGalleryReadingMode(val label: String) {
 
 class ExperimentalGalleryActivity : ComponentActivity() {
     companion object {
+        private const val EXTRA_SOURCE = "screenshot_source"
+        private const val EXTRA_ENTRY = "screenshot_entry"
+        private const val EXTRA_TITLE = "screenshot_title"
+        private const val EXTRA_CHAPTERS = "screenshot_chapters"
         fun createIntent(context: Context): Intent = Intent(context, ExperimentalGalleryActivity::class.java)
+
+        internal fun createEntryIntent(
+            context: Context, sourceId: String, remoteId: String, title: String,
+            legacyChapterPrefixes: List<String>
+        ): Intent = createIntent(context)
+            .putExtra(EXTRA_SOURCE, sourceId)
+            .putExtra(EXTRA_ENTRY, remoteId)
+            .putExtra(EXTRA_TITLE, title.take(600))
+            .putStringArrayListExtra(EXTRA_CHAPTERS, ArrayList(legacyChapterPrefixes.take(8_000)))
+    }
+
+    private var entryScope: EntryScreenshotScope? = null
+
+    private fun entryScreenshotsBlocked(): Boolean {
+        if (!intent.hasExtra(EXTRA_SOURCE)) return false
+        val prefs = com.roinur.saucetracker.core.preferences.SaucePreferences.from(this)
+        return prefs.boolean(com.roinur.saucetracker.core.preferences.KEY_INCOGNITO_MODE_ENABLED) ||
+            com.roinur.saucetracker.core.security.AppLockController.from(this, 0L)
+                .shouldLock(prefs.boolean(com.roinur.saucetracker.core.preferences.KEY_APP_LOCK_ENABLED))
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent { ExperimentalGalleryApp { ExperimentalGalleryScreen(onClose = ::finish) } }
+        if (intent.hasExtra(EXTRA_SOURCE)) {
+            val source = intent.getStringExtra(EXTRA_SOURCE).orEmpty()
+            val remoteId = intent.getStringExtra(EXTRA_ENTRY).orEmpty()
+            if (source !in setOf("nhentai", "mangadex") || remoteId.isBlank() || remoteId.length > 160 || entryScreenshotsBlocked()) {
+                finish()
+                return
+            }
+            entryScope = EntryScreenshotScope(
+                source, remoteId, intent.getStringExtra(EXTRA_TITLE).orEmpty().take(600),
+                intent.getStringArrayListExtra(EXTRA_CHAPTERS).orEmpty().take(8_000).map { it.take(12).lowercase() }.toSet()
+            )
+        }
+        setContent { ExperimentalGalleryApp { ExperimentalGalleryScreen(onClose = ::finish, entryScope = entryScope) } }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (entryScreenshotsBlocked()) finish()
     }
 }
 
 @Composable
-private fun ExperimentalGalleryApp(content: @Composable () -> Unit) {
+internal fun ExperimentalGalleryApp(content: @Composable () -> Unit) {
     val context = LocalContext.current
-    val prefs = remember(context) { context.getSharedPreferences(EXPERIMENTAL_GALLERY_PREFS, Context.MODE_PRIVATE) }
+    val prefs = remember(context) { com.roinur.saucetracker.core.preferences.SaucePreferences.from(context).raw }
+    val extraDark = remember(prefs) { prefs.getBoolean(com.roinur.saucetracker.core.preferences.KEY_EXTRA_DARK, false) }
     val themeMode = remember(prefs) {
         prefs.getString(KEY_THEME_MODE, ThemeMode.SYSTEM.name)?.let { raw -> ThemeMode.entries.firstOrNull { it.name == raw } } ?: ThemeMode.SYSTEM
     }
@@ -208,7 +249,9 @@ private fun ExperimentalGalleryApp(content: @Composable () -> Unit) {
     val baseScheme = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
         if (useDark) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
     } else fallbackScheme
-    val colorScheme = applyExperimentalAccentMode(baseScheme, accentMode, useDark)
+    val colorScheme = applyExperimentalAccentMode(
+        com.roinur.saucetracker.core.ui.theme.applyExtraDarkMode(baseScheme, useDark, extraDark), accentMode, useDark
+    )
     ExperimentalGallerySystemBars(darkContent = !useDark, barColor = colorScheme.background.toArgb())
     MaterialTheme(colorScheme = colorScheme) {
         Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) { content() }
@@ -234,7 +277,7 @@ private fun ExperimentalGallerySystemBars(darkContent: Boolean, barColor: Int) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ExperimentalGalleryScreen(onClose: () -> Unit) {
+private fun ExperimentalGalleryScreen(onClose: () -> Unit, entryScope: EntryScreenshotScope? = null) {
     val context = LocalContext.current
     val prefs = remember(context) { context.getSharedPreferences(EXPERIMENTAL_GALLERY_PREFS, Context.MODE_PRIVATE) }
     val scope = rememberCoroutineScope()
@@ -268,10 +311,20 @@ private fun ExperimentalGalleryScreen(onClose: () -> Unit) {
     var gridRootOffset by remember { mutableStateOf(Offset.Zero) }
     val storageConfigured = remember(reloadNonce) { resolveEffectiveGalleryDownloadTreeUri(context).isNotBlank() }
     val folderLabel = remember(reloadNonce) { experimentalGalleryFolderLabel(context) }
+    var galleryLoaded by remember { mutableStateOf(false) }
     val contents by produceState<ExperimentalGalleryContents?>(initialValue = null, reloadNonce) {
-        value = withContext(Dispatchers.IO) { loadExperimentalGalleryContents(context) }
+        galleryLoaded = false
+        try {
+            value = withContext(Dispatchers.IO) { loadExperimentalGalleryContents(context) }
+        } finally {
+            galleryLoaded = true
+        }
     }
-    val photos = contents?.photos.orEmpty()
+    val photos = remember(contents, entryScope) {
+        contents?.photos.orEmpty().filter { photo ->
+            entryScope == null || entryScope.matches(photo.sourceId, photo.remoteId, photo.displayName)
+        }
+    }
 
     fun clearImportConflictFlow() {
         duplicateConflictQueue = emptyList()
@@ -418,7 +471,7 @@ private fun ExperimentalGalleryScreen(onClose: () -> Unit) {
             CenterAlignedTopAppBar(
                 title = {
                     Text(
-                        text = if (selectedIds.isNotEmpty()) "${selectedIds.size} selected" else "Experimental Gallery",
+                        text = if (selectedIds.isNotEmpty()) "${selectedIds.size} selected" else if (entryScope != null) "Screenshots" else "Experimental Gallery",
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
@@ -432,6 +485,8 @@ private fun ExperimentalGalleryScreen(onClose: () -> Unit) {
                     if (selectedIds.isNotEmpty()) {
                         TextButton(onClick = { showDeleteDialog = true }) { Text("Delete") }
                     } else {
+                        // Deferred beyond 2.0 until the historical screenshots are ready.
+                        // TextButton(onClick = { context.startActivity(Intent(context, VersionMuseumActivity::class.java)) }) { Text("Museum") }
                         TextButton(onClick = { showLayoutDialog = true }) { Text("Layout") }
                     }
                 },
@@ -449,8 +504,9 @@ private fun ExperimentalGalleryScreen(onClose: () -> Unit) {
             modifier = Modifier.fillMaxSize().padding(innerPadding).padding(horizontal = 12.dp, vertical = 10.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            Text(
-                text = "Stored in the hidden local-download root so the files ride with that backup/download folder.",
+            if (entryScope == null) {
+                Text(
+                    text = "Stored in the hidden local-download root so the files ride with that backup/download folder.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -471,6 +527,10 @@ private fun ExperimentalGalleryScreen(onClose: () -> Unit) {
                     modifier = Modifier.weight(1f)
                 ) { Text("Open Folder") }
             }
+            } else {
+                Text(entryScope.title, style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            }
             if (busyLabel != null) {
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
                     CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
@@ -486,9 +546,14 @@ private fun ExperimentalGalleryScreen(onClose: () -> Unit) {
                         Text("Set a procedural backup folder or downloads folder first.", color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
+                !galleryLoaded -> {
+                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator()
+                    }
+                }
                 photos.isEmpty() -> {
                     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text("No experimental photos yet.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(if (entryScope != null) "No screenshots saved for this entry." else "No experimental photos yet.", color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
                 else -> {

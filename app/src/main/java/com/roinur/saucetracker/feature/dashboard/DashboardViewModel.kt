@@ -14,6 +14,25 @@ import com.roinur.saucetracker.data.backup.*
 import com.roinur.saucetracker.data.downloads.*
 import com.roinur.saucetracker.data.database.SauceTrackerDatabase
 import com.roinur.saucetracker.data.remote.GalleryHtmlParser
+import com.roinur.saucetracker.data.profile.LibraryProfile
+import com.roinur.saucetracker.data.profile.ProfileKind
+import com.roinur.saucetracker.data.profile.ProfileStore
+import com.roinur.saucetracker.data.profile.ProfilePreferenceStore
+import com.roinur.saucetracker.data.source.ProfileSourceEntry
+import com.roinur.saucetracker.data.source.SourceEntry
+import com.roinur.saucetracker.data.source.SourceEntryKey
+import com.roinur.saucetracker.data.source.SourceEntryStore
+import com.roinur.saucetracker.data.source.SourceCapability
+import com.roinur.saucetracker.data.source.SourceId
+import com.roinur.saucetracker.data.source.SourceQuery
+import com.roinur.saucetracker.data.source.SourceQueryField
+import com.roinur.saucetracker.data.source.SourceQueryTerm
+import com.roinur.saucetracker.data.source.SourceQueryParser
+import com.roinur.saucetracker.data.source.SourceRegistry
+import com.roinur.saucetracker.data.source.SourceChapterCacheStore
+import com.roinur.saucetracker.data.source.MangaDexSourceAdapter
+import com.roinur.saucetracker.data.source.resolveBrowserSource
+import com.roinur.saucetracker.data.source.uiCode
 import com.roinur.saucetracker.feature.desktopbridge.DesktopBridgeServer
 import com.roinur.saucetracker.feature.browser.GalleryBrowserActivity
 import com.roinur.saucetracker.feature.heatmap.HeatmapEngine
@@ -33,6 +52,7 @@ import com.roinur.saucetracker.feature.library.presets.TagPresetRole
 import com.roinur.saucetracker.feature.library.presets.TagPresetStore
 import com.roinur.saucetracker.feature.library.presets.TagPresetTerm
 import com.roinur.saucetracker.feature.slideshow.GallerySlideshowActivity
+import com.roinur.saucetracker.feature.slideshow.MangaDexReaderWarmup
 import com.roinur.saucetracker.feature.suggestions.SuggestionsViewModel
 import com.roinur.saucetracker.feature.suggestions.buildSuggestionProfile
 import com.roinur.saucetracker.feature.suggestions.buildSuggestionSearchQuery
@@ -338,6 +358,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
 import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.charset.Charset
@@ -364,14 +385,14 @@ import kotlin.math.roundToInt
 private const val APP_LOCK_GRACE_MS = 30_000L
 private const val DESKTOP_BRIDGE_DEFAULT_PORT = 17366
 private const val SUBSCRIPTION_ROUTE_FETCH_PAGES = 2
-private const val THUMB_PRELOAD_MIN_PARALLEL = 4
-private const val THUMB_PRELOAD_MAX_PARALLEL = 16
+private const val THUMB_PRELOAD_MIN_PARALLEL = 2
+private const val THUMB_PRELOAD_MAX_PARALLEL = 6
 private const val THUMB_PRELOAD_TOP_PRIORITY_COUNT = 48
 private const val ENTRY_HEATMAP_CACHE_SOLVER_WIDTH_PX = 1600f
 private const val ENTRY_HEATMAP_CACHE_SOLVER_HEIGHT_PX = 2200f
 private const val ENTRY_HEATMAP_CACHE_SPACING_PX = 56f
 private const val EXPORT_PREFIX = "Sauce exported Date"
-private const val EXPORT_FORMAT = "NH_TAGBOOK_EXPORT_V1"
+private const val EXPORT_FORMAT = "SAUCE_TRACKER_EXPORT_V2"
 private const val URL_TRAILING_PUNCT = ".,;:!?)]}"
 private val EXPORT_FILENAME_FORMAT: DateTimeFormatter =
     DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss", Locale.US)
@@ -483,6 +504,10 @@ class DashboardViewModel(
     private val backupImporter = BackupImporter()
     private val suggestionsViewModel = SuggestionsViewModel()
     private val db = SauceTrackerDatabase(application)
+    private val sourceChapterCache = SourceChapterCacheStore(db)
+    private val profileStore = ProfileStore(db)
+    private val sourceEntryStore = SourceEntryStore(db)
+    private val sourceRegistry = SourceRegistry.createDefault()
     private val client = NhentaiApiClient()
     private val suggestionApi = SuggestionApiClient()
     private val libraryRepository = LibraryRepository(db)
@@ -490,12 +515,16 @@ class DashboardViewModel(
         owner = this,
         application = application,
         loadDetails = {
-            val codes = libraryRepository.allEntryCodes()
-            libraryRepository.entryDetails(codes)
+            sourceEntryStore.allEntries(activeProfileId, effectiveSourceScope()).mapNotNull { row ->
+                if (row.entry.key.sourceId.value == "nhentai") {
+                    row.entry.key.remoteId.toIntOrNull()?.let(libraryRepository::entryDetail)?.copy(isRead = row.state.isRead, rating = row.state.rating)
+                } else sourceEntryDetail(row.entry.key.uiCode(), row)
+            }
         }
     )
     private val suggestionsRepository = SuggestionsRepository(suggestionApi)
     private val suggestionCacheStore by lazy { SuggestionCacheStore(prefs) }
+    private val sourceSuggestionCacheStore by lazy { com.roinur.saucetracker.feature.suggestions.SourceSuggestionCacheStore(prefs) }
     private val subscriptionRepository = SubscriptionRepository(db)
     private val subscriptionSyncUseCase = SubscriptionSyncUseCase(
         subscriptions = subscriptionRepository,
@@ -506,12 +535,15 @@ class DashboardViewModel(
     private val subscriptionsViewModel = SubscriptionsViewModel()
     private val heatmapRepository = HeatmapRepository(db)
     private val prefs = SaucePreferences.from(application).raw
+    private val profilePreferenceStore = ProfilePreferenceStore(db)
     private val preferenceReader = DashboardPreferenceReader(prefs)
     private val tasteTrainingStore = TasteTrainingStore(prefs)
     private val tagPresetStore = TagPresetStore(prefs)
     private val appLockController = AppLockController.from(application, APP_LOCK_GRACE_MS)
 
     var themeMode by mutableStateOf(GitHubMediaSession.themeOverride ?: preferenceReader.loadThemeMode())
+        private set
+    var extraDark by mutableStateOf(prefs.getBoolean(com.roinur.saucetracker.core.preferences.KEY_EXTRA_DARK, false))
         private set
     var accentMode by mutableStateOf(preferenceReader.loadAccentMode())
         private set
@@ -598,6 +630,42 @@ class DashboardViewModel(
     var statusMessage by mutableStateOf("Ready.")
         private set
 
+    var profiles by mutableStateOf<List<LibraryProfile>>(emptyList())
+        private set
+    var activeProfileId by mutableStateOf(ProfileStore.MAIN_PROFILE_ID)
+        private set
+    val activeProfile: LibraryProfile?
+        get() = profiles.firstOrNull { it.id == activeProfileId }
+    var activeSourceScope by mutableStateOf<Set<SourceId>>(emptySet())
+        private set
+    var pendingBrowserSourceChoice by mutableStateOf<String?>(null)
+        private set
+    var sourceLibraryEntries by mutableStateOf<List<ProfileSourceEntry>>(emptyList())
+        private set
+    val profileTransferEntries: List<ProfileSourceEntry>
+        get() = visibleSourceRows()
+    private var sourceEntryByUiCode: Map<Int, ProfileSourceEntry> = emptyMap()
+    var sourceAwareSuggestedEntries by mutableStateOf<List<SourceEntry>>(emptyList())
+        private set
+    private var sourceSuggestionByUiCode: Map<Int, SourceEntry> = emptyMap()
+    private var scoredSourceSuggestions: List<SuggestedEntryRow> = emptyList()
+    private val sourceSuggestionCache = linkedMapOf<String, Pair<Long, com.roinur.saucetracker.feature.suggestions.SourceSuggestionResult>>()
+    var sourceAwareSuggestionsLoading by mutableStateOf(false)
+        private set
+    var sourceAwareSuggestionsMessage by mutableStateOf<String?>(null)
+        private set
+    private var sourceAwareSuggestionsJob: Job? = null
+    private var sourceAwareSuggestionsGeneration = 0L
+    var sourceSearchResults by mutableStateOf<List<SourceEntry>>(emptyList())
+        private set
+    var sourceSearchErrors by mutableStateOf<Map<SourceId, String>>(emptyMap())
+        private set
+    var sourceSearchHasMore by mutableStateOf<Map<SourceId, Boolean>>(emptyMap())
+        private set
+    var sourceSearchRunning by mutableStateOf(false)
+        private set
+    private var sourceSearchJob: Job? = null
+
     var entries by mutableStateOf<List<EntryRow>>(emptyList())
         private set
     var suggestedEntries by mutableStateOf<List<SuggestedEntryRow>>(emptyList())
@@ -641,6 +709,10 @@ class DashboardViewModel(
     var subscriptions: List<SubscriptionRow>
         get() = subscriptionsViewModel.uiState.subscriptions
         private set(value) { subscriptionsViewModel.update { it.copy(subscriptions = value) } }
+    val logicalSubscriptions: List<SubscriptionRow>
+        get() = subscriptions.distinctBy { subscriptionRouteKey(it.routeType, it.routeName) }
+    val logicalSubscriptionCount: Int
+        get() = logicalSubscriptions.size
     var subscriptionEvents: List<SubscriptionEventRow>
         get() = subscriptionsViewModel.uiState.events
         private set(value) { subscriptionsViewModel.update { it.copy(events = value) } }
@@ -780,6 +852,14 @@ class DashboardViewModel(
         private set
     var errorDialogMessage by mutableStateOf<String?>(null)
         private set
+    var restorePreviewMessage by mutableStateOf<String?>(null)
+        private set
+    var restoreProfileOptions by mutableStateOf<List<RestoreProfileOption>>(emptyList())
+        private set
+    var selectedRestoreProfileId by mutableStateOf<String?>(null)
+        private set
+    private var pendingRestoreUri: Uri? = null
+    private var authorizedRestoreUri: String? = null
     internal var libraryHealthReport by mutableStateOf<LibraryHealthReport?>(null)
         private set
     var libraryHealthScanning by mutableStateOf(false)
@@ -884,7 +964,9 @@ class DashboardViewModel(
             onChallengeCodeChanged = { code ->
                 mainHandler.post { desktopBridgeChallengeCode = code.ifBlank { "--" } }
             },
-            currentAccentMode = { accentMode.name }
+            currentAccentMode = { accentMode.name },
+            currentSuggestions = { suggestedEntries.toList() },
+            currentSourceSuggestions = { sourceAwareSuggestedEntries.toList() }
         )
     }
     private var pendingBrowserRatingCode: Int? = savedStateHandle.get(SAVED_PENDING_RATING_CODE)
@@ -927,6 +1009,8 @@ class DashboardViewModel(
     private var suggestionsRefreshRunning: Boolean = false
 
     init {
+        profilePreferenceStore.ensureSeed(profileStore.activeProfileId(), prefs)
+        reloadProfiles(resetScope = true)
         if (appLockEnabled && !isAppLockConfigured()) {
             appLockEnabled = false
             appLocked = false
@@ -1005,6 +1089,367 @@ class DashboardViewModel(
 
     fun setStatus(message: String) {
         statusMessage = message
+    }
+
+    fun selectProfile(profileId: String) {
+        if (profileId == activeProfileId) return
+        profilePreferenceStore.capture(activeProfileId, prefs)
+        profilePreferenceStore.apply(profileId, prefs)
+        if (!profileStore.setActiveProfile(profileId)) return
+        activeProfileId = profileId
+        reloadProfiles(resetScope = true)
+        selectedCode = null
+        sourceSearchResults = emptyList()
+        sourceSearchErrors = emptyMap()
+        sourceSearchHasMore = emptyMap()
+        releaseTagGraphSession()
+        readAnalyticsLoaded = false
+        reloadProfilePreferenceState()
+        refreshAll(null)
+        ensureReadAnalyticsLoaded(forceRefresh = true)
+        reloadSubscriptionsState()
+        setStatus("Profile changed to ${activeProfile?.name ?: "profile"}.")
+    }
+
+    private fun reloadProfilePreferenceState() {
+        sourceAwareSuggestionsJob?.cancel()
+        sourceAwareSuggestionsGeneration++
+        suggestionsRefreshJob?.cancel()
+        suggestionsRefreshGeneration++
+        tasteTrainingPromptRefreshJob?.cancel()
+        tasteTrainingTagLoadJob?.cancel()
+        tasteTrainingLoadGeneration++
+        tasteTrainingPromptLoading = false
+        sourceAwareSuggestedEntries = emptyList()
+        sourceSuggestionByUiCode = emptyMap()
+        scoredSourceSuggestions = emptyList()
+        sourceAwareSuggestionsLoading = false
+        suggestionCategoryWeights = preferenceReader.loadSuggestionCategoryWeights()
+        suggestionThemeStrength = preferenceReader.loadSuggestionThemeStrength()
+        subscriptionRefreshIntervalHours = preferenceReader.loadSubscriptionRefreshIntervalHours()
+        loadHiddenSuggestionCodesIntoMemory()
+        tasteTrainingFeedback = tasteTrainingStore.load()
+        tasteTrainingFeedbackCount = tasteTrainingFeedback.size
+        tasteTrainingPrompts = emptyList()
+        tagPresets = tagPresetStore.load()
+        suggestedEntries = emptyList()
+        suggestedOverflowEntries.clear()
+        suggestionDuplicateHintCache.clear()
+        suggestionGalleryCache.clear()
+        restoreSuggestedPreviewFromCache()
+    }
+
+    fun createProfile(name: String, sourceLocked: Boolean, sourceIds: Set<SourceId>) {
+        runCatching {
+            profileStore.create(name, if (sourceLocked) ProfileKind.SOURCE_LOCKED else ProfileKind.COMBINED, sourceIds)
+        }.onSuccess { created ->
+            reloadProfiles(resetScope = false)
+            selectProfile(created.id)
+        }.onFailure { errorDialogMessage = it.message ?: "Could not create profile." }
+    }
+
+    fun renameActiveProfile(name: String) {
+        if (profileStore.rename(activeProfileId, name)) {
+            reloadProfiles(resetScope = false)
+            setStatus("Profile renamed.")
+        } else errorDialogMessage = "Enter a non-empty profile name."
+    }
+
+    fun updateActiveProfileSources(sourceIds: Set<SourceId>) {
+        if (profileStore.replaceSources(activeProfileId, sourceIds)) {
+            reloadProfiles(resetScope = true)
+            refreshAll(null)
+            setStatus("Profile sources updated.")
+        } else errorDialogMessage = "This profile needs a valid source selection."
+    }
+
+    fun deleteProfile(profileId: String) {
+        if (profileId == activeProfileId) {
+            errorDialogMessage = "Switch to another profile before deleting this one."
+            return
+        }
+        viewModelScope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    val directory = File(getApplication<Application>().filesDir, "profile-safety").apply { mkdirs() }
+                    val snapshot = File(directory, "before-profile-delete-${System.currentTimeMillis()}.json")
+                    snapshot.writeText(BackupSerializer.serialize(buildProfileAwareBackupSnapshot()), Charsets.UTF_8)
+                    backupImporter.parse(snapshot.readText(Charsets.UTF_8))
+                    check(profileStore.deleteProfile(profileId)) { "Profile could not be deleted." }
+                }
+            }.onSuccess { reloadProfiles(resetScope = false); refreshAll(null); setStatus("Profile deleted after a verified safety snapshot.") }
+                .onFailure { errorDialogMessage = it.message ?: "Profile deletion failed; no data was removed." }
+        }
+    }
+
+    fun transferProfileEntries(keys: Collection<SourceEntryKey>, targetProfileId: String, move: Boolean) {
+        if (incognitoModeEnabled) {
+            errorDialogMessage = "Profile transfers are disabled in incognito mode."
+            return
+        }
+        if (keys.isEmpty()) {
+            errorDialogMessage = "Select at least one entry."
+            return
+        }
+        viewModelScope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) { profileStore.copyOrMove(keys, activeProfileId, targetProfileId, move) }
+            }.onSuccess { result ->
+                reloadProfiles(resetScope = false)
+                refreshAll(null)
+                infoDialogMessage = buildString {
+                    append(if (move) "Move" else "Copy")
+                    append(" complete. Copied ${result.copied}, merged ${result.merged}")
+                    if (move) append(", removed ${result.removedFromSource}")
+                    append(", failed ${result.failed}.")
+                }
+            }.onFailure { errorDialogMessage = it.message ?: "Profile transfer failed; source data was preserved." }
+        }
+    }
+
+    fun toggleSourceScope(sourceId: SourceId) {
+        val allowed = activeProfile?.sourceIds.orEmpty()
+        if (sourceId !in allowed || allowed.size <= 1) return
+        val next = if (sourceId in activeSourceScope) activeSourceScope - sourceId else activeSourceScope + sourceId
+        activeSourceScope = next.ifEmpty { allowed }
+        sourceSearchResults = emptyList()
+        sourceSearchHasMore = emptyMap()
+        releaseTagGraphSession()
+        readAnalyticsLoaded = false
+        refreshAll(null)
+        if (!suggestedEntriesCollapsed) refreshSuggestedEntries(force = true)
+        ensureReadAnalyticsLoaded(forceRefresh = true)
+    }
+
+    fun searchActiveSources() {
+        val input = codeInput.trim()
+        if (input.isBlank()) {
+            sourceSearchResults = emptyList()
+            sourceSearchErrors = emptyMap()
+            sourceSearchHasMore = emptyMap()
+            return
+        }
+        val sources = effectiveSourceScope()
+        sourceSearchJob?.cancel()
+        sourceSearchRunning = true
+        sourceSearchErrors = emptyMap()
+        sourceSearchJob = viewModelScope.launch {
+            val query = SourceQueryParser.parse(input)
+            val result = coroutineScope {
+                sources.map { sourceId ->
+                    async(Dispatchers.IO) { sourceId to runCatching { sourceRegistry.requireAdapter(sourceId).search(query, 0, 25) } }
+                }.awaitAll()
+            }
+            sourceSearchResults = result.flatMap { it.second.getOrNull()?.entries.orEmpty() }
+            sourceSearchHasMore = result.associate { (sourceId, outcome) -> sourceId to (outcome.getOrNull()?.hasMore == true) }
+            sourceSearchErrors = result.mapNotNull { (sourceId, outcome) ->
+                outcome.exceptionOrNull()?.let { sourceId to (it.message ?: "Provider error") }
+            }.toMap()
+            sourceSearchRunning = false
+        }
+    }
+
+    fun retrySourceSearch(sourceId: SourceId) = searchMoreFromSource(sourceId, replace = true)
+
+    fun loadMoreSourceSearch(sourceId: SourceId) = searchMoreFromSource(sourceId, replace = false)
+
+    private fun searchMoreFromSource(sourceId: SourceId, replace: Boolean) {
+        if (sourceSearchRunning || sourceId !in effectiveSourceScope()) return
+        val input = codeInput.trim()
+        if (input.isBlank()) return
+        sourceSearchRunning = true
+        sourceSearchJob?.cancel()
+        sourceSearchJob = viewModelScope.launch {
+            val existing = sourceSearchResults.filter { it.key.sourceId == sourceId }
+            val offset = if (replace) 0 else existing.size
+            val outcome = withContext(Dispatchers.IO) {
+                runCatching { sourceRegistry.requireAdapter(sourceId).search(SourceQueryParser.parse(input), offset, 25) }
+            }
+            outcome.onSuccess { page ->
+                val untouched = sourceSearchResults.filterNot { it.key.sourceId == sourceId }
+                val sourceRows = if (replace) page.entries else (existing + page.entries).distinctBy { it.key }
+                sourceSearchResults = untouched + sourceRows
+                sourceSearchErrors = sourceSearchErrors - sourceId
+                sourceSearchHasMore = sourceSearchHasMore + (sourceId to page.hasMore)
+            }.onFailure { error ->
+                sourceSearchErrors = sourceSearchErrors + (sourceId to (error.message ?: "Provider error"))
+            }
+            sourceSearchRunning = false
+        }
+    }
+
+    fun importSourceEntry(entry: SourceEntry) {
+        viewModelScope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    if (entry.key.sourceId.value == "nhentai") {
+                        entry.key.remoteId.toIntOrNull()?.let { db.upsertGallery(client.fetchGallery(it)) }
+                    }
+                    sourceEntryStore.upsert(entry, activeProfileId)
+                }
+            }.onSuccess {
+                loadSourceLibrary()
+                refreshAll(entry.key.remoteId.toIntOrNull())
+                setStatus("Added ${entry.title} to ${activeProfile?.name ?: "profile"}.")
+            }.onFailure { errorDialogMessage = it.message ?: "Could not add entry." }
+        }
+    }
+
+    fun updateSourceEntryState(key: SourceEntryKey, read: Boolean? = null, rating: Int? = null, pinned: Boolean? = null) {
+        viewModelScope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    check(sourceEntryStore.updateState(activeProfileId, key, read, rating, pinned)) { "Entry is no longer in this profile." }
+                    if (key.sourceId.value == "nhentai") {
+                        val code = key.remoteId.toIntOrNull()
+                        if (code != null) {
+                            read?.let { db.setEntryRead(code, it, activeProfileId) }
+                            rating?.let { db.setEntryRating(code, it, activeProfileId) }
+                            pinned?.let { db.setEntryPinned(code, it, activeProfileId) }
+                        }
+                    }
+                }
+            }.onSuccess { loadSourceLibrary(); refreshAll(key.remoteId.toIntOrNull()) }
+                .onFailure { errorDialogMessage = it.message ?: "Could not update entry state." }
+        }
+    }
+
+    fun canFullyRemoveSourceEntry(key: SourceEntryKey): Boolean = sourceEntryStore.membershipCount(key) <= 1
+
+    fun removeSourceEntryFromActiveProfile(key: SourceEntryKey, cleanupSharedData: Boolean = false) {
+        viewModelScope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    check(sourceEntryStore.removeMembership(activeProfileId, key)) { "Entry is no longer in this profile." }
+                    if (cleanupSharedData) {
+                        check(sourceEntryStore.deleteSharedMetadataIfUnused(key)) { "Shared data is still used by another profile." }
+                        if (key.sourceId.value == "nhentai") {
+                            key.remoteId.toIntOrNull()?.let { code ->
+                                removeDownloadedGallery(getApplication<Application>().applicationContext, code)
+                            }
+                        }
+                    }
+                }
+            }.onSuccess {
+                loadSourceLibrary()
+                refreshAll(null)
+                setStatus(if (cleanupSharedData) "Entry and unused shared data were removed." else "Entry removed from this profile. Shared data was kept.")
+            }
+                .onFailure { errorDialogMessage = it.message ?: "Could not remove entry from profile." }
+        }
+    }
+
+    private fun reloadProfiles(resetScope: Boolean) {
+        profiles = profileStore.profiles()
+        activeProfileId = profileStore.activeProfileId().takeIf { id -> profiles.any { it.id == id } }
+            ?: profiles.firstOrNull()?.id.orEmpty().ifBlank { ProfileStore.MAIN_PROFILE_ID }
+        if (resetScope || activeSourceScope.isEmpty()) activeSourceScope = activeProfile?.sourceIds.orEmpty()
+        loadSourceLibrary()
+    }
+
+    private fun effectiveSourceScope(): Set<SourceId> {
+        val configured = activeSourceScope.ifEmpty { activeProfile?.sourceIds.orEmpty() }
+        val selected = activeTagFilterIds.mapNotNull(libraryRepository::tagRoute).filter { it.type == "source" }
+            .mapTo(hashSetOf()) { com.roinur.saucetracker.data.source.normalizeSourceName(it.name) }
+        return if (selected.isEmpty()) configured else configured.filterTo(linkedSetOf()) { it.value in selected }
+    }
+
+    private fun hasNhentaiLibraryEntries(): Boolean =
+        SourceId("nhentai") in effectiveSourceScope()
+
+    val subscriptionsAvailableForScope: Boolean
+        get() = effectiveSourceScope().any { sourceId ->
+            sourceRegistry.adapter(sourceId)?.supports(SourceCapability.SUBSCRIPTIONS) == true
+        }
+
+    private fun loadSourceLibrary() {
+        sourceLibraryEntries = sourceEntryStore.allEntries(activeProfileId, effectiveSourceScope())
+    }
+
+    fun refreshSourceAwareSuggestions(applySessionExclusions: Boolean = false) {
+        sourceAwareSuggestionsJob?.cancel()
+        val generation = ++sourceAwareSuggestionsGeneration
+        val profileId = activeProfileId
+        val sourceScope = effectiveSourceScope()
+        val targetSources = sourceScope.filterNot { it.value == "nhentai" }.toSet()
+        if (targetSources.isEmpty()) {
+            sourceAwareSuggestedEntries = emptyList()
+            sourceSuggestionByUiCode = emptyMap()
+            scoredSourceSuggestions = emptyList()
+            suggestedEntries = suggestedEntries.filter { it.sourceId in sourceScope.map(SourceId::value) }
+            sourceAwareSuggestionsMessage = null
+            sourceAwareSuggestionsLoading = false
+            return
+        }
+        val blocked = blockedTagNamesForBrowser().map(::normalizeTagName).toSet()
+        val selected = activeTagFilterIds.mapNotNull(libraryRepository::tagRoute)
+        val search = effectiveEntrySearch()
+        val weights = suggestionCategoryWeights.toMap()
+        val theme = suggestionThemeStrength
+        val adjustments = tasteTrainingStore.boundedDriverAdjustments()
+        val mode = suggestionMode
+        val hidden = hiddenSuggestionCodesSnapshot()
+        val excluded = if (applySessionExclusions) sessionExcludedSuggestionCodes.toSet() else emptySet()
+        sourceAwareSuggestionsLoading = true
+        sourceAwareSuggestionsMessage = null
+        sourceAwareSuggestionsJob = viewModelScope.launch {
+            try {
+                val library = withContext(Dispatchers.IO) { sourceEntryStore.allEntries(profileId, sourceScope) }
+                val sessions = withContext(Dispatchers.IO) { db.readingSessionEntryKeys(profileId, sourceScope.mapTo(linkedSetOf()) { it.value }) }
+                val fingerprint = listOf(profileId, sourceScope.sortedBy { it.value }, library.hashCode(), sessions.hashCode(), search, selected, blocked, weights, theme, adjustments, mode, hidden, excluded).joinToString("|")
+                val now = System.currentTimeMillis()
+                val cached = sourceSuggestionCache[fingerprint]?.takeIf { now - it.first < 24 * 60 * 60 * 1000L }?.second
+                    ?: sourceSuggestionCacheStore.load(fingerprint)
+                val result = cached ?: com.roinur.saucetracker.feature.suggestions.collectSourceSuggestions(
+                    targetSources.map(sourceRegistry::requireAdapter), library, sessions, blocked,
+                    weights, theme, adjustments, mode, search, selected, hidden, excluded, libraryRepository::tagRoute
+                )
+                if (generation != sourceAwareSuggestionsGeneration || profileId != activeProfileId || sourceScope != effectiveSourceScope()) return@launch
+                if (result.errors.isEmpty()) {
+                    if (cached == null) {
+                        sourceSuggestionCache[fingerprint] = now to result
+                        sourceSuggestionCacheStore.save(fingerprint, result)
+                    }
+                    while (sourceSuggestionCache.size > 8) sourceSuggestionCache.remove(sourceSuggestionCache.keys.first())
+                }
+                sourceAwareSuggestedEntries = result.candidates.map { it.entry }
+                sourceSuggestionByUiCode = sourceAwareSuggestedEntries.associateBy { it.key.uiCode() }
+                scoredSourceSuggestions = result.candidates.map { candidate ->
+                    SuggestedEntryRow(candidate.entry.key.uiCode(), candidate.entry.title, candidate.entry.unitCount,
+                        candidate.entry.publishedAt, candidate.entry.thumbnailUrl,
+                        candidate.breakdown.rankedTags.sortedByDescending { it.second }.map { it.first }.take(4),
+                        candidate.breakdown.score, candidate.breakdown.whySuggestedReason,
+                        sourceId = candidate.entry.key.sourceId.value, remoteId = candidate.entry.key.remoteId, unitLabel = candidate.entry.unitLabel)
+                }
+                publishSourceAwareSuggestionRows()
+                sourceAwareSuggestionsMessage = when {
+                    result.errors.isNotEmpty() -> result.errors.entries.joinToString(" · ") { "${it.key}: ${it.value}. Refresh to retry." }
+                    result.candidates.isEmpty() -> "No recommendations match yet. Read/rate more entries or adjust your filters."
+                    else -> null
+                }
+            } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+            catch (error: Exception) { sourceAwareSuggestionsMessage = error.message ?: "Recommendations unavailable. Refresh to retry." }
+            finally {
+                if (generation == sourceAwareSuggestionsGeneration && profileId == activeProfileId && sourceScope == effectiveSourceScope()) {
+                    sourceAwareSuggestionsLoading = false
+                    if (!hasNhentaiLibraryEntries()) {
+                        suggestedEntriesLoading = false
+                        suggestedEntriesInfoMessage = sourceAwareSuggestionsMessage
+                    }
+                }
+            }
+        }
+    }
+
+    private fun publishSourceAwareSuggestionRows() {
+        val nhentaiRows = if (hasNhentaiLibraryEntries()) suggestedEntries.filter { it.sourceId == "nhentai" } else emptyList()
+        suggestedEntries = com.roinur.saucetracker.feature.suggestions.balancedSourceSuggestions(
+            com.roinur.saucetracker.feature.suggestions.visibleSourceSuggestionRows(
+                nhentaiRows + scoredSourceSuggestions, hiddenSuggestedCodes.keys.toSet(), sessionExcludedSuggestionCodes.toSet(),
+                sourceLibraryEntries.mapTo(hashSetOf()) { it.entry.key.storageKey }, effectiveSourceScope().mapTo(hashSetOf()) { it.value }
+            ),
+            { code -> sourceSuggestionByUiCode[code]?.key?.sourceId?.value ?: "nhentai" }, SUGGESTION_VISIBLE_TARGET
+        )
     }
 
     fun runLibraryHealthScan() {
@@ -1252,10 +1697,16 @@ class DashboardViewModel(
         }
         if (suggestedEntries.none { it.code == code }) return
         sessionExcludedSuggestionCodes += code
+        if (code in sourceSuggestionByUiCode) {
+            suggestedEntries = suggestedEntries.filterNot { it.code == code }
+            publishSourceAwareSuggestionRows()
+            setStatus("Skipped suggestion.")
+            return
+        }
 
         val remaining = suggestedEntries.filterNot { it.code == code }.toMutableList()
         val existingCodes = remaining.asSequence().map { it.code }.toMutableSet()
-        val importedCodes = libraryRepository.allEntryCodes().toSet()
+        val importedCodes = sourceEntryStore.legacyCodes(activeProfileId)
         val replacement = takeSuggestedOverflowReplacement(existingCodes, importedCodes)
         if (replacement != null) {
             remaining += replacement
@@ -1397,14 +1848,18 @@ class DashboardViewModel(
     }
 
     private fun restoreSuggestedPreviewFromCache() {
+        if (!hasNhentaiLibraryEntries()) return
+        val profileId = activeProfileId
+        val scope = effectiveSourceScope()
         val cached = suggestionCacheStore.loadLatestRows() ?: return
         val hiddenCodes = hiddenSuggestedCodes.keys.toSet()
         viewModelScope.launch {
             val importedCodes = withContext(Dispatchers.IO) {
-                libraryRepository.allEntryCodes().toSet()
+                sourceEntryStore.allEntries(profileId, scope).mapNotNull { if (it.entry.key.sourceId.value == "nhentai") it.entry.key.remoteId.toIntOrNull() else null }.toSet()
             }
+            if (profileId != activeProfileId || scope != effectiveSourceScope()) return@launch
             val visible = cached.rows.filterNot { row ->
-                row.code in importedCodes || row.code in hiddenCodes
+                row.code in importedCodes || row.code in hiddenCodes || row.code >= 100_000_000
             }
             if (suggestedEntries.isEmpty() && visible.isNotEmpty()) {
                 suggestedEntries = visible.take(SUGGESTION_VISIBLE_TARGET)
@@ -1558,6 +2013,13 @@ class DashboardViewModel(
 
     fun dismissErrorDialog() {
         errorDialogMessage = null
+    }
+
+    fun updateExtraDark(enabled: Boolean) {
+        if (extraDark == enabled) return
+        extraDark = enabled
+        prefs.edit().putBoolean(com.roinur.saucetracker.core.preferences.KEY_EXTRA_DARK, enabled).apply()
+        setStatus("Extra dark ${if (enabled) "enabled" else "disabled"}. Applies in dark mode.")
     }
 
     fun cycleThemeMode() {
@@ -2210,6 +2672,16 @@ class DashboardViewModel(
         setStatus("Desktop bridge URL copied.")
     }
 
+    private fun buildProfileAwareBackupSnapshot(): JSONObject {
+        profilePreferenceStore.capture(activeProfileId, prefs)
+        return BackupSnapshotExport.buildSnapshotWithSettings(
+            db = db,
+            prefs = prefs,
+            backupImporter = backupImporter,
+            entryPinPriorityEnabled = entryPinPriorityEnabled
+        )
+    }
+
     private fun triggerProceduralBackup(ignoreThrottle: Boolean, reportStatus: Boolean) {
         if (GitHubMediaSession.active) {
             if (reportStatus) setStatus("Backups are disabled in GitHub media mode.")
@@ -2231,9 +2703,9 @@ class DashboardViewModel(
             val result = runCatching {
                 val treeUri = Uri.parse(treeUriValue)
                 var refreshedPopularTagCount = -1
-                if (reportStatus) {
+                if (reportStatus && SourceId("nhentai") in effectiveSourceScope()) {
                     runCatching { client.fetchAllPopularTags() }.getOrNull()?.let { payload ->
-                        db.replacePopularTags(payload.tags)
+                        db.mergePopularTags(payload.tags)
                         refreshedPopularTagCount = payload.tags.size
                     }
                 }
@@ -2241,12 +2713,7 @@ class DashboardViewModel(
                     context = getApplication<Application>().applicationContext,
                     treeUri = treeUri
                 )?.let(::parseBackupSnapshotOrNull)
-                val snapshot = BackupSnapshotExport.buildSnapshotWithSettings(
-                    db = db,
-                    prefs = prefs,
-                    backupImporter = backupImporter,
-                    entryPinPriorityEnabled = entryPinPriorityEnabled
-                )
+                val snapshot = buildProfileAwareBackupSnapshot()
                 val mergedSnapshot = BackupSnapshotExport.mergeProceduralSnapshots(
                     latestSnapshot = snapshot,
                     existingSnapshot = existingSnapshot
@@ -2256,7 +2723,16 @@ class DashboardViewModel(
                     context = getApplication<Application>().applicationContext,
                     treeUri = treeUri,
                     text = exportText,
-                    validator = { candidate -> parseBackupSnapshotOrNull(candidate) != null }
+                    validator = { candidate ->
+                        val parsed = parseBackupSnapshotOrNull(candidate)
+                        val platform = parsed?.optJSONObject("source_platform")
+                        parsed != null && platform != null &&
+                            platform.optInt("schema_version") >= 2 &&
+                            platform.optJSONArray("profiles")?.length() ==
+                                snapshot.optJSONObject("source_platform")?.optJSONArray("profiles")?.length() &&
+                            platform.optJSONArray("source_entries")?.length() ==
+                                snapshot.optJSONObject("source_platform")?.optJSONArray("source_entries")?.length()
+                    }
                 )
                 val thumbnailSyncResult = if (backupThumbnailArchiveEnabled) {
                     syncBackupThumbnailArchiveWithProgress(
@@ -2573,12 +3049,34 @@ class DashboardViewModel(
         )
     }
 
-    fun openUnifiedInputInBrowser() {
-        val rawInput = codeInput.trim()
+    fun openUnifiedInputInBrowser() = openUnifiedInputInBrowser(forcedSource = null, rawInput = codeInput.trim())
+
+    fun chooseBrowserSource(sourceId: SourceId) {
+        val input = pendingBrowserSourceChoice ?: return
+        pendingBrowserSourceChoice = null
+        openUnifiedInputInBrowser(forcedSource = sourceId, rawInput = input)
+    }
+
+    fun dismissBrowserSourceChoice() {
+        pendingBrowserSourceChoice = null
+    }
+
+    private fun openUnifiedInputInBrowser(forcedSource: SourceId?, rawInput: String) {
         val hasTagFilter = hasActiveTagFilter()
 
         if (rawInput.equals("github", ignoreCase = true)) {
             toggleGitHubMediaMode()
+            return
+        }
+
+        val allowedSources = effectiveSourceScope()
+        val chosenSource = resolveBrowserSource(allowedSources, rawInput, forcedSource, sourceRegistry)
+        if (chosenSource == SourceId("mangadex")) {
+            openSourceBrowser(SourceId("mangadex"), rawInput)
+            return
+        }
+        if (chosenSource == null && allowedSources.size > 1) {
+            pendingBrowserSourceChoice = rawInput
             return
         }
 
@@ -2664,6 +3162,41 @@ class DashboardViewModel(
         }
 
         openCombinedSearchInBrowser(searchText = "", showEmptyPrompt = false)
+    }
+
+    private fun buildSourceBrowserInput(rawInput: String): String = com.roinur.saucetracker.data.source.sourceBrowserQuery(
+        rawInput, activeTagFilterIds.mapNotNull(libraryRepository::tagRoute)
+    )
+
+    private fun openSourceBrowser(sourceId: SourceId, input: String): Boolean {
+        if (incognitoModeEnabled) {
+            setStatus("Open in browser is disabled in incognito mode.")
+            return false
+        }
+        val app = getApplication<Application>()
+        val adapter = sourceRegistry.requireAdapter(sourceId)
+        val remoteId = adapter.normalizeRemoteId(input)
+        val filteredQuery = if (remoteId == null) buildSourceBrowserInput(input) else ""
+        val applyBlocking = remoteId == null && if (filteredQuery.isBlank()) applyBlockedTagsToHome else applyBlockedTagsToSearchTerms
+        return runCatching {
+            app.startActivity(
+                GalleryBrowserActivity.createIntent(
+                    context = app,
+                    initialQuery = filteredQuery,
+                    incognitoModeEnabled = incognitoModeEnabled,
+                    blockedTags = if (applyBlocking) blockedTagNamesForBrowser() else emptyList(),
+                    sourceId = sourceId.value,
+                    initialRemoteId = remoteId
+                ).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+            )
+        }.onSuccess {
+            setStatus("Opened ${adapter.displayName} in the gallery browser.")
+        }.onFailure { error ->
+            errorDialogMessage = "Could not open ${sourceId.value} browser:\n${error.message ?: "unknown error"}"
+            setStatus("Could not open ${sourceId.value} browser.")
+        }.isSuccess
     }
 
     fun queueIncomingShareImage(uri: Uri) {
@@ -3169,23 +3702,39 @@ class DashboardViewModel(
         if (popularTagsFetchInProgress) return
         popularTagsFetchInProgress = true
         viewModelScope.launch {
-            setStatus("Fetching popular tags from nhentai...")
+            val scope = effectiveSourceScope()
+            setStatus("Fetching tags from active sources...")
             val result = withContext(Dispatchers.IO) {
-                runCatching { client.fetchAllPopularTags() }
+                runCatching {
+                    val failures = mutableListOf<String>()
+                    val rows = scope.flatMap { source ->
+                        runCatching {
+                            if (source.value == "nhentai") client.fetchAllPopularTags().tags
+                            else sourceRegistry.requireAdapter(source).fetchTagCatalog().map { PopularTagSeed(it.name, it.type, 0) }
+                        }.getOrElse { error ->
+                            if (error is kotlinx.coroutines.CancellationException) throw error
+                            failures += source.value
+                            emptyList()
+                        }
+                    }
+                    if (rows.isEmpty() && failures.isNotEmpty()) error("Could not fetch tags from ${failures.joinToString()}.")
+                    db.mergePopularTags(rows)
+                    rows.size to failures
+                }
             }
             val payload = result.getOrNull()
             if (payload != null) {
                 withContext(Dispatchers.IO) {
-                    db.replacePopularTags(payload.tags)
+                    // Catalog merged above; preserve tags/blocking from the other source.
                 }
                 loadPopularTags()
                 tagGraphLoaded = false
                 tagGraphSnapshot = null
                 setStatus(
-                    if (payload.tags.isEmpty()) {
-                        "No popular tags were found on nhentai."
+                    if (payload.second.isNotEmpty()) {
+                        "Fetched ${payload.first} tags; retry ${payload.second.joinToString()}."
                     } else {
-                        "Fetched ${payload.tags.size} tags across ${payload.pagesFetched} page(s)."
+                        "Fetched ${payload.first} tags from active sources."
                     }
                 )
             } else {
@@ -3298,7 +3847,8 @@ class DashboardViewModel(
         val requestCode = code
         selectedDetailLoadJob = viewModelScope.launch {
             val detail = withContext(Dispatchers.IO) {
-                libraryRepository.entryDetail(requestCode)
+                sourceEntryByUiCode[requestCode]?.let { sourceEntryDetail(requestCode, it) }
+                    ?: libraryRepository.entryDetail(requestCode)
             }
             if (selectedCode != requestCode) return@launch
             selectedDetail = detail
@@ -3320,7 +3870,30 @@ class DashboardViewModel(
                 )
             }
             selectedDetailLoading = false
-            scheduleSelectedEntrySupport(requestCode, detail)
+            if (detail?.isNhentai != false) scheduleSelectedEntrySupport(requestCode, detail)
+            else {
+                selectedSeriesNeighbors = SeriesNeighbors()
+                selectedEntryRelatedUiState = SelectedEntryRelatedUiState()
+                if (!incognitoModeEnabled) {
+                    viewModelScope.launch(Dispatchers.IO) warmReader@{
+                        val progress = db.sourceReaderProgress(
+                            ProfileStore(db).activeProfileId(),
+                            detail.sourceId,
+                            detail.remoteId
+                        )
+                        val adapter = sourceRegistry.requireAdapter(SourceId(detail.sourceId)) as? MangaDexSourceAdapter
+                            ?: return@warmReader
+                        MangaDexReaderWarmup.start(
+                            context = getApplication<Application>(),
+                            adapter = adapter,
+                            remoteId = detail.remoteId,
+                            chapterId = progress?.chapterId,
+                            startPageIndex = progress?.pageIndex ?: 0,
+                            prefetchPages = true
+                        )
+                    }
+                }
+            }
         }
     }
 
@@ -3393,11 +3966,11 @@ class DashboardViewModel(
     fun openCreatorFromDetail(creatorType: String, creatorName: String) {
         val type = creatorType.trim().lowercase(Locale.US)
         val cleanName = creatorName.trim()
-        if (cleanName.isBlank() || (type != "artist" && type != "group")) return
+        if (cleanName.isBlank() || type !in setOf("artist", "author", "group")) return
 
         val normalizedTarget = normalizeTagName(cleanName)
         val currentListId = creators.firstOrNull { creator ->
-            creator.type.equals(type, ignoreCase = true) &&
+            (creator.id > com.roinur.saucetracker.data.source.SOURCE_TERM_UI_ID_BASE || creator.type.equals(type, ignoreCase = true)) &&
                 normalizeTagName(creator.name) == normalizedTarget
         }?.id
         val creatorId = currentListId ?: db.findCreatorId(type, cleanName)
@@ -3449,7 +4022,13 @@ class DashboardViewModel(
         }
         val type = creatorType.trim().lowercase(Locale.US)
         val cleanName = creatorName.trim()
-        if (cleanName.isBlank() || (type != "artist" && type != "group")) return
+        if (cleanName.isBlank()) return
+        val selectedSource = selectedDetail?.sourceId?.takeIf { it != "nhentai" }
+        if (selectedSource != null) {
+            openSourceBrowser(SourceId(selectedSource), "$type:\"$cleanName\"")
+            return
+        }
+        if (type != "artist" && type != "group") return
         openGalleryCodeBrowser(
             initialCode = null,
             initialQuery = "",
@@ -3458,6 +4037,83 @@ class DashboardViewModel(
             blockedTags = emptyList(),
             successStatus = "Opened $type '$cleanName' preview in browser."
         )
+    }
+
+    suspend fun fetchSourceChapters(detail: EntryDetail): List<com.roinur.saucetracker.data.source.SourceChapter> =
+        withContext(Dispatchers.IO) {
+            if (detail.isNhentai) return@withContext emptyList()
+            sourceChapterCache.fresh(detail.sourceId, detail.remoteId)?.let { return@withContext it.chapters }
+            val stale = sourceChapterCache.load(detail.sourceId, detail.remoteId)
+            val adapter = sourceRegistry.requireAdapter(SourceId(detail.sourceId))
+            runCatching {
+                val chapters = mutableListOf<com.roinur.saucetracker.data.source.SourceChapter>()
+                var offset = 0
+                repeat(100) {
+                    val page = adapter.fetchChapters(detail.remoteId, offset = offset, limit = 100)
+                    chapters += page.chapters
+                    if (!page.hasMore || page.chapters.isEmpty()) {
+                        return@runCatching chapters.distinctBy { it.id }
+                    }
+                    offset += page.chapters.size
+                }
+                chapters.distinctBy { it.id }
+            }.onSuccess { chapters ->
+                sourceChapterCache.save(detail.sourceId, detail.remoteId, chapters)
+            }.getOrElse { error ->
+                stale?.chapters ?: throw error
+            }
+        }
+
+    suspend fun fetchSourceChapterReadingState(detail: EntryDetail, profileId: String) = withContext(Dispatchers.IO) {
+        com.roinur.saucetracker.data.database.SourceChapterReadingState(
+            resume = db.sourceReaderProgress(profileId, detail.sourceId, detail.remoteId),
+            chapters = db.sourceChapterProgress(profileId, detail.sourceId, detail.remoteId)
+        )
+    }
+
+    fun openSourceChapter(code: Int, chapterId: String? = null, startPage: Int = 1) {
+        val detail = selectedDetail?.takeIf { it.code == code } ?: libraryRepository.entryDetail(code)
+        if (detail == null || detail.isNhentai || incognitoModeEnabled) return
+        viewModelScope.launch {
+            clearPendingRatingRequirement()
+            val adapter = sourceRegistry.requireAdapter(SourceId(detail.sourceId)) as MangaDexSourceAdapter
+            val savedProgress = if (chapterId.isNullOrBlank()) {
+                withContext(Dispatchers.IO) {
+                    db.sourceReaderProgress(
+                        ProfileStore(db).activeProfileId(),
+                        detail.sourceId,
+                        detail.remoteId
+                    )
+                }
+            } else {
+                null
+            }
+            val requestedChapterId = chapterId?.takeIf(String::isNotBlank)
+                ?: savedProgress?.chapterId
+            val requestedStartPage = savedProgress
+                ?.takeIf { it.chapterId == requestedChapterId }
+                ?.pageIndex?.plus(1)
+                ?: startPage
+            MangaDexReaderWarmup.start(
+                context = getApplication<Application>(),
+                adapter = adapter,
+                remoteId = detail.remoteId,
+                chapterId = requestedChapterId,
+                startPageIndex = (requestedStartPage - 1).coerceAtLeast(0),
+                measureOpen = true
+            )
+            openInAppSlideshow(
+                code = detail.code,
+                title = detail.title,
+                mediaId = 0L,
+                coverExt = "",
+                numPages = 0,
+                startPage = requestedStartPage,
+                sourceId = detail.sourceId,
+                remoteId = detail.remoteId,
+                chapterId = requestedChapterId.orEmpty()
+            )
+        }
     }
 
     fun openThumbnailPreviewInBrowser(code: Int) {
@@ -3469,6 +4125,10 @@ class DashboardViewModel(
         val detail = selectedDetail?.takeIf { it.code == code } ?: libraryRepository.entryDetail(code)
         if (detail == null) {
             infoDialogMessage = "Select an entry first."
+            return
+        }
+        if (!detail.isNhentai) {
+            openSourceChapter(code)
             return
         }
         viewModelScope.launch {
@@ -3596,12 +4256,16 @@ class DashboardViewModel(
             infoDialogMessage = "Select an entry first."
             return
         }
-        openGalleryCodeBrowser(
-            initialCode = detail.code,
-            initialQuery = "",
-            blockedTags = emptyList(),
-            successStatus = "Opened code ${detail.code} preview in gallery browser."
-        )
+        if (detail.isNhentai) {
+            openGalleryCodeBrowser(
+                initialCode = detail.code,
+                initialQuery = "",
+                blockedTags = emptyList(),
+                successStatus = "Opened code ${detail.code} preview in gallery browser."
+            )
+        } else {
+            openSourceBrowser(SourceId(detail.sourceId), detail.remoteId)
+        }
     }
 
     fun openInputOrHomeInBrowser() {
@@ -3725,7 +4389,12 @@ class DashboardViewModel(
         mediaId: Long,
         coverExt: String,
         numPages: Int,
-        startPage: Int = 1
+        startPage: Int = 1,
+        sourceId: String = "nhentai",
+        remoteId: String = code.toString(),
+        pageUrls: List<String> = emptyList(),
+        fallbackPageUrls: List<String> = emptyList(),
+        chapterId: String = ""
     ): Boolean {
         val app = getApplication<Application>()
         val result = runCatching {
@@ -3737,13 +4406,18 @@ class DashboardViewModel(
                 coverExt = coverExt,
                 numPages = numPages,
                 startPage = startPage.coerceIn(1, numPages.coerceAtLeast(1)),
-                incognitoModeEnabled = incognitoModeEnabled
+                incognitoModeEnabled = incognitoModeEnabled,
+                sourceId = sourceId,
+                remoteId = remoteId,
+                pageUrls = pageUrls,
+                fallbackPageUrls = fallbackPageUrls,
+                chapterId = chapterId
             ).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
             app.startActivity(intent)
         }.onSuccess {
-            setStatus("Opened code $code in slideshow.")
+            setStatus(if (sourceId == "nhentai") "Opened code $code in slideshow." else "Opened chapter in slideshow.")
         }.onFailure { exc ->
             errorDialogMessage = "Could not open slideshow:\n${exc.message ?: "unknown error"}"
             setStatus("Could not open slideshow.")
@@ -3771,13 +4445,18 @@ class DashboardViewModel(
 
     fun getEntryDetail(code: Int): EntryDetail? = libraryRepository.entryDetail(code)
 
-    fun getEntryDetails(codes: List<Int>): List<EntryDetail> = libraryRepository.entryDetails(codes)
+    fun getEntryDetails(codes: List<Int>): List<EntryDetail> = codes.mapNotNull { code ->
+        sourceEntryByUiCode[code]?.let { sourceEntryDetail(code, it) } ?: libraryRepository.entryDetail(code)
+    }
 
-    fun getEntryRatingHistory(code: Int): List<EntryRatingHistoryRow> = db.getEntryRatingHistory(code)
+    fun getEntryRatingHistory(code: Int): List<EntryRatingHistoryRow> =
+        if (code in sourceEntryByUiCode) emptyList() else db.getEntryRatingHistory(code)
 
-    fun getAverageEntryRating(code: Int): Float? = db.getAverageEntryRating(code)
+    fun getAverageEntryRating(code: Int): Float? = sourceEntryByUiCode[code]?.state?.rating?.toFloat()
+        ?: db.getAverageEntryRating(code)
 
     fun updateRatingHistoryRow(code: Int, row: EntryRatingHistoryRow, rating: Int) {
+        if (code in sourceEntryByUiCode) return
         db.updateRatingHistoryRow(code, row, rating)
         publishLibraryChange(
             LibraryChange.entryContentChanged(LibraryChangeReason.RATING_HISTORY_CHANGED, code)
@@ -3785,6 +4464,7 @@ class DashboardViewModel(
     }
 
     fun deleteRatingHistoryRow(code: Int, row: EntryRatingHistoryRow) {
+        if (code in sourceEntryByUiCode) return
         db.deleteRatingHistoryRow(code, row)
         publishLibraryChange(
             LibraryChange(
@@ -3816,8 +4496,12 @@ class DashboardViewModel(
             .map { it.code }
             .filter { it > 0 }
             .forEach { sessionExcludedSuggestionCodes += it }
+        if (effectiveSourceScope().any { it.value != "nhentai" }) {
+            refreshSuggestedEntries(force = true, applySessionExclusions = true)
+            return
+        }
         val targetCount = currentRows.size.coerceAtLeast(1)
-        val importedCodes = libraryRepository.allEntryCodes().toSet()
+        val importedCodes = sourceEntryStore.legacyCodes(activeProfileId)
         val nextRows = mutableListOf<SuggestedEntryRow>()
         val existingCodes = mutableSetOf<Int>()
         while (nextRows.size < targetCount) {
@@ -4135,6 +4819,10 @@ class DashboardViewModel(
             setStatus("Open in browser is disabled in incognito mode.")
             return
         }
+        sourceSuggestionByUiCode[code]?.let { entry ->
+            openSourceBrowser(entry.key.sourceId, entry.key.remoteId)
+            return
+        }
         openGalleryCodeBrowser(
             initialCode = code,
             initialQuery = "",
@@ -4160,6 +4848,11 @@ class DashboardViewModel(
         if (code <= 0) return
         if (incognitoModeEnabled) {
             setStatus("Import is disabled in incognito mode.")
+            return
+        }
+        sourceSuggestionByUiCode[code]?.let { entry ->
+            openSourceBrowser(entry.key.sourceId, entry.key.remoteId)
+            setStatus("Choose language and import ${entry.title} from ${entry.key.sourceId.value}.")
             return
         }
         viewModelScope.launch {
@@ -4192,18 +4885,23 @@ class DashboardViewModel(
         tasteTrainingPromptRefreshJob?.cancel()
         tasteTrainingTagLoadJob?.cancel()
         val generation = ++tasteTrainingLoadGeneration
+        val profileId = activeProfileId
+        val scope = effectiveSourceScope()
         tasteTrainingPromptLoading = true
         tasteTrainingPromptRefreshJob = viewModelScope.launch {
             try {
-                val completedCodes = tasteTrainingStore.load().mapTo(hashSetOf()) { it.code }
+                val completedKeys = tasteTrainingStore.load().mapTo(hashSetOf()) { it.sourceKey }
                 val prompts = withContext(Dispatchers.IO) {
-                    val rows = db.exportSuggestionProfileSnapshot().optJSONArray("entries") ?: JSONArray()
+                    val rows = com.roinur.saucetracker.feature.suggestions.sourceSuggestionSnapshot(
+                        sourceEntryStore.allEntries(profileId, scope), emptySet()
+                    ).optJSONArray("entries") ?: JSONArray()
                     buildList {
                         for (index in 0 until rows.length()) {
                             val row = rows.optJSONObject(index) ?: continue
                             val code = row.optInt("code", 0)
+                            val sourceKey = row.optString("source_key")
                             val rating = row.optInt("rating", 0).coerceIn(0, 5)
-                            if (code <= 0 || code in completedCodes || rating !in setOf(1, 2, 4, 5)) continue
+                            if (code <= 0 || sourceKey in completedKeys || rating !in setOf(1, 2, 4, 5)) continue
                             val drivers = buildList {
                                 val tagsJson = row.optJSONArray("tags") ?: JSONArray()
                                 for (tagIndex in 0 until tagsJson.length()) {
@@ -4216,20 +4914,15 @@ class DashboardViewModel(
                                 }
                             }.distinctBy { it.key }
                             if (drivers.isNotEmpty()) {
-                                val mediaId = row.optLong("media_id", 0L).coerceAtLeast(0L)
-                                val coverExt = row.optString("cover_ext", "jpg").trim().ifBlank { "jpg" }
-                                val thumbnailUrl = if (mediaId > 0L) {
-                                    "https://t.nhentai.net/galleries/$mediaId/cover.$coverExt"
-                                } else {
-                                    ""
-                                }
+                                val thumbnailUrl = row.optString("thumbnail_url")
                                 add(
                                     TasteTrainingPrompt(
                                         code = code,
                                         title = row.optString("title").ifBlank { "Gallery $code" },
                                         rating = rating,
                                         thumbnailUrl = thumbnailUrl,
-                                        drivers = drivers
+                                        drivers = drivers,
+                                        sourceKey = sourceKey
                                     )
                                 )
                             }
@@ -4237,7 +4930,7 @@ class DashboardViewModel(
                     }.sortedWith(compareByDescending<TasteTrainingPrompt> { abs(it.rating - 3) }.thenByDescending { it.code })
                         .take(40)
                 }
-                if (generation != tasteTrainingLoadGeneration) return@launch
+                if (generation != tasteTrainingLoadGeneration || profileId != activeProfileId || scope != effectiveSourceScope()) return@launch
                 tasteTrainingPrompts = prompts
                 refreshCurrentTasteTrainingPromptTags()
             } catch (cancelled: CancellationException) {
@@ -4249,6 +4942,10 @@ class DashboardViewModel(
                 }
             }
         }
+    }
+
+    internal fun openTasteTrainingEntry(prompt: TasteTrainingPrompt) {
+        openSourceBrowser(SourceId(prompt.sourceKey.substringBefore(':')), prompt.sourceKey.substringAfter(':'))
     }
 
     private fun refreshCurrentTasteTrainingPromptTags() {
@@ -4263,9 +4960,12 @@ class DashboardViewModel(
         tasteTrainingTagLoadJob = viewModelScope.launch {
             try {
                 val remoteDrivers = withContext(Dispatchers.IO) {
-                    runCatching { client.fetchGallery(prompt.code) }
+                    runCatching {
+                        val entry = sourceRegistry.requireAdapter(SourceId(prompt.sourceKey.substringBefore(':')))
+                            .fetchEntry(prompt.sourceKey.substringAfter(':'))
+                        entry.tags.map { GalleryTag(it.name, it.type) } + entry.creators.map { GalleryTag(it.name, it.type) }
+                    }
                         .getOrNull()
-                        ?.tags
                         .orEmpty()
                         .mapNotNull { tag ->
                             val name = tag.name.trim()
@@ -4304,7 +5004,9 @@ class DashboardViewModel(
                 selectedDriverKeys,
                 notAboutMetadata,
                 normallyLikeButNotThisEntry,
-                System.currentTimeMillis()
+                System.currentTimeMillis(),
+                prompt.sourceKey,
+                prompt.title
             )
         )
         tasteTrainingFeedbackCount = tasteTrainingStore.load().size
@@ -4320,8 +5022,8 @@ class DashboardViewModel(
         refreshCurrentTasteTrainingPromptTags()
     }
 
-    fun deleteTasteTrainingFeedback(code: Int) {
-        tasteTrainingStore.delete(code)
+    fun deleteTasteTrainingFeedback(code: Int, sourceKey: String? = null) {
+        tasteTrainingStore.delete(code, sourceKey)
         tasteTrainingFeedback = tasteTrainingStore.load()
         tasteTrainingFeedbackCount = tasteTrainingFeedback.size
         refreshTasteTrainingPrompts()
@@ -4467,8 +5169,19 @@ class DashboardViewModel(
 
     fun refreshSuggestedEntries(force: Boolean = true, applySessionExclusions: Boolean = false) {
         if (!force && suggestedEntries.isNotEmpty()) return
+        if (!hasNhentaiLibraryEntries()) {
+            suggestionsRefreshJob?.cancel()
+            suggestionsRefreshGeneration += 1
+            suggestedEntriesLoading = true
+            suggestedEntriesInfoMessage = null
+            refreshSourceAwareSuggestions(applySessionExclusions)
+            return
+        }
+        refreshSourceAwareSuggestions(applySessionExclusions)
         suggestionsRefreshJob?.cancel()
         val refreshGeneration = ++suggestionsRefreshGeneration
+        val profileId = activeProfileId
+        val sourceScope = effectiveSourceScope()
         suggestionsRefreshRunning = true
         suggestedEntriesLoading = true
         val refreshStartedAt = android.os.SystemClock.elapsedRealtime()
@@ -4480,7 +5193,8 @@ class DashboardViewModel(
                     .map { normalizeTagName(it) }
                     .filter { it.isNotBlank() }
                     .toSet()
-                val requiredTagFilters = activeTagFilterNames()
+                val requiredTagFilters = activeTagFilterIds.mapNotNull(libraryRepository::tagRoute)
+                    .filterNot { it.type == "source" }.map { it.name }
                     .map { normalizeTagName(it) }
                     .filter { it.isNotBlank() }
                     .toSet()
@@ -4495,7 +5209,7 @@ class DashboardViewModel(
                         if (value.isBlank()) return@forEach
                         when (filter.key) {
                             "tag", "type", "parody", "character", "category", "language" -> add(value)
-                            "artist", "group" -> add(value)
+                            "artist", "author", "group" -> add(value)
                         }
                     }
                 }.distinct()
@@ -4504,7 +5218,7 @@ class DashboardViewModel(
                         val value = normalizeTagName(filter.value)
                         if (value.isBlank()) return@forEach
                         when (filter.key) {
-                            "artist", "group" -> add(SuggestionCreatorToken(name = value, type = filter.key))
+                            "artist", "author", "group" -> add(SuggestionCreatorToken(name = value, type = if (filter.key == "author") "artist" else filter.key))
                         }
                     }
                 }.distinctBy { "${it.type}:${it.name}" }
@@ -4516,7 +5230,9 @@ class DashboardViewModel(
                 }
                 val suggestionCategoryWeightsSnapshot = suggestionCategoryWeights
                 val suggestionThemeStrengthSnapshot = suggestionThemeStrength
-                val libraryRevision = withContext(Dispatchers.IO) { db.suggestionLibraryRevision() }
+                val scopedLibrary = withContext(Dispatchers.IO) { sourceEntryStore.allEntries(profileId, sourceScope) }
+                val sessionKeys = withContext(Dispatchers.IO) { db.readingSessionEntryKeys(profileId, sourceScope.mapTo(linkedSetOf()) { it.value }) }
+                val libraryRevision = "$profileId|${sourceScope.sortedBy { it.value }}|${scopedLibrary.hashCode()}|${sessionKeys.hashCode()}"
                 val cacheFingerprint = suggestionCacheFingerprint(
                     libraryRevision = libraryRevision,
                     blocked = blocked,
@@ -4544,8 +5260,8 @@ class DashboardViewModel(
 
                 val computation = runCatching {
                     withContext(Dispatchers.IO) {
-                        val snapshot = db.exportSuggestionProfileSnapshot()
-                        val importedCodes = libraryRepository.allEntryCodes().toSet()
+                        val snapshot = com.roinur.saucetracker.feature.suggestions.sourceSuggestionSnapshot(scopedLibrary, sessionKeys, "pages")
+                        val importedCodes = scopedLibrary.filter { it.entry.key.sourceId.value == "nhentai" }.mapNotNull { it.entry.key.remoteId.toIntOrNull() }.toSet()
                         val localDuplicateSeeds = db.listDuplicateSeeds()
                         val duplicateSeedVersion = computeLocalDuplicateSeedVersion(localDuplicateSeeds)
                         val duplicateSeedsChanged = suggestionDuplicateHintCacheSeedVersion != duplicateSeedVersion
@@ -4926,12 +5642,15 @@ class DashboardViewModel(
                     SuggestionRefreshResult(rows = emptyList(), infoMessage = null)
                 }
 
-                if (refreshGeneration != suggestionsRefreshGeneration) return@launch
+                if (refreshGeneration != suggestionsRefreshGeneration || profileId != activeProfileId || sourceScope != effectiveSourceScope()) return@launch
                 if (computation.rows.isNotEmpty() || suggestedEntries.isEmpty()) {
                     suggestedEntries = computation.rows
                     suggestedOverflowEntries.clear()
                     suggestedOverflowEntries.addAll(computation.overflowRows)
                     suggestedEntriesInfoMessage = computation.infoMessage
+                    if (sourceAwareSuggestedEntries.isNotEmpty()) {
+                        publishSourceAwareSuggestionRows()
+                    }
                 } else {
                     suggestedEntriesInfoMessage = computation.infoMessage
                         ?: "Showing cached recommendations; background refresh found no replacements."
@@ -5164,6 +5883,27 @@ class DashboardViewModel(
 
     fun refetchCode(code: Int) {
         if (code <= 0) return
+        val sourceRow = sourceEntryByUiCode[code]
+        if (sourceRow != null) {
+            viewModelScope.launch {
+                setStatus("Re-fetching ${sourceRow.entry.key.displayId} from ${sourceRow.entry.key.sourceId.value}...")
+                runCatching {
+                    withContext(Dispatchers.IO) {
+                        val refreshed = sourceRegistry.requireAdapter(sourceRow.entry.key.sourceId)
+                            .fetchEntry(sourceRow.entry.key.remoteId)
+                        sourceEntryStore.upsert(refreshed, activeProfileId)
+                    }
+                }.onSuccess {
+                    loadEntries(code, autoSelectFirst = false)
+                    selectEntry(code)
+                    setStatus("Re-fetched ${sourceRow.entry.key.displayId}.")
+                }.onFailure { error ->
+                    errorDialogMessage = error.message ?: "Could not re-fetch entry."
+                    setStatus("Re-fetch failed for ${sourceRow.entry.key.displayId}.")
+                }
+            }
+            return
+        }
         viewModelScope.launch {
             setStatus("Re-fetching code $code...")
             val result = withContext(Dispatchers.IO) {
@@ -5201,6 +5941,16 @@ class DashboardViewModel(
             return
         }
 
+        val sourceRow = sourceEntryByUiCode[code]
+        if (sourceRow != null) {
+            sourceEntryStore.removeMembership(activeProfileId, sourceRow.entry.key)
+            selectedCode = null
+            selectedDetail = null
+            selectedSummary = null
+            loadEntries(null, autoSelectFirst = false)
+            setStatus("Removed ${sourceRow.entry.key.displayId} from this profile.")
+            return
+        }
         if (removeLocalDownload) {
             removeDownloadedEntry(code)
         }
@@ -5230,8 +5980,14 @@ class DashboardViewModel(
 
     fun setEntryRating(code: Int, rating: Int) {
         val safe = rating.coerceIn(0, 5)
-        libraryRepository.setEntryRating(code, safe)
-        libraryRepository.setEntryRead(code, true)
+        sourceEntryByUiCode[code]?.let { row ->
+            sourceEntryStore.updateState(activeProfileId, row.entry.key, read = true, rating = safe)
+            loadEntries(code, autoSelectFirst = false)
+            setStatus("Set rating for ${row.entry.key.displayId} to $safe/5 and marked as read.")
+            return
+        }
+        libraryRepository.setEntryRating(code, safe, activeProfileId)
+        libraryRepository.setEntryRead(code, true, activeProfileId)
         publishLibraryChange(
             LibraryChange.entryContentChanged(LibraryChangeReason.RATING_CHANGED, code)
         )
@@ -5248,7 +6004,13 @@ class DashboardViewModel(
             ?: libraryRepository.entryDetail(code)?.isRead
             ?: false
         val next = !current
-        libraryRepository.setEntryRead(code, next)
+        sourceEntryByUiCode[code]?.let { row ->
+            sourceEntryStore.updateState(activeProfileId, row.entry.key, read = next)
+            loadEntries(code, autoSelectFirst = false)
+            setStatus(if (next) "Marked ${row.entry.key.displayId} as read." else "Marked ${row.entry.key.displayId} as unread.")
+            return
+        }
+        libraryRepository.setEntryRead(code, next, activeProfileId)
         publishLibraryChange(
             LibraryChange.entryContentChanged(LibraryChangeReason.READ_STATE_CHANGED, code)
         )
@@ -5311,6 +6073,11 @@ class DashboardViewModel(
         rating: Int = 0
     ) {
         if (code <= 0) return
+        sourceSuggestionByUiCode[code]?.let { entry ->
+            openSourceBrowser(entry.key.sourceId, entry.key.remoteId)
+            setStatus("Open ${entry.title} to choose language before adding it.")
+            return
+        }
         if (incognitoModeEnabled) {
             setStatus("Suggestion gestures are disabled in incognito mode.")
             return
@@ -5331,16 +6098,16 @@ class DashboardViewModel(
                 }
                 when (action) {
                     SuggestedQuickAction.PIN_TOGGLE -> {
-                        val nextPinned = !db.isEntryPinned(code)
-                        libraryRepository.setEntryPinned(code, nextPinned)
+                        val nextPinned = !(profileStore.state(activeProfileId, SourceEntryKey(SourceId("nhentai"), code.toString()))?.pinned ?: false)
+                        libraryRepository.setEntryPinned(code, nextPinned, activeProfileId)
                     }
                     SuggestedQuickAction.READ_TOGGLE -> {
                         val nextRead = !(detail?.isRead ?: false)
-                        libraryRepository.setEntryRead(code, nextRead)
+                        libraryRepository.setEntryRead(code, nextRead, activeProfileId)
                     }
                     SuggestedQuickAction.SET_RATING -> {
-                        libraryRepository.setEntryRating(code, rating.coerceIn(0, 5))
-                        libraryRepository.setEntryRead(code, true)
+                        libraryRepository.setEntryRating(code, rating.coerceIn(0, 5), activeProfileId)
+                        libraryRepository.setEntryRead(code, true, activeProfileId)
                     }
                 }
                 val refreshed = libraryRepository.entryDetail(code)
@@ -5348,7 +6115,7 @@ class DashboardViewModel(
                     insertedNew = insertedNew,
                     rating = refreshed?.rating?.coerceIn(0, 5) ?: 0,
                     isRead = refreshed?.isRead == true,
-                    pinned = db.isEntryPinned(code)
+                    pinned = profileStore.state(activeProfileId, SourceEntryKey(SourceId("nhentai"), code.toString()))?.pinned == true
                 )
             }
             if (result == null) {
@@ -5404,9 +6171,15 @@ class DashboardViewModel(
             return
         }
         val currentPinned = entries.firstOrNull { it.code == code }?.pinned
-            ?: db.isEntryPinned(code)
+            ?: profileStore.state(activeProfileId, SourceEntryKey(SourceId("nhentai"), code.toString()))?.pinned == true
         val nextPinned = !currentPinned
-        libraryRepository.setEntryPinned(code, nextPinned)
+        sourceEntryByUiCode[code]?.let { row ->
+            sourceEntryStore.updateState(activeProfileId, row.entry.key, pinned = nextPinned)
+            loadEntries(code, autoSelectFirst = false)
+            setStatus(if (nextPinned) "Pinned ${row.entry.key.displayId}." else "Unpinned ${row.entry.key.displayId}.")
+            return
+        }
+        libraryRepository.setEntryPinned(code, nextPinned, activeProfileId)
         publishLibraryChange(LibraryChange.pinChanged(code))
         setStatus(
             if (nextPinned) {
@@ -5435,10 +6208,10 @@ class DashboardViewModel(
         val prompt = browserRatingPromptState ?: return
         val safeRating = prompt.rating.coerceIn(0, 5)
         if (prompt.isReread) {
-            db.recordEntryRatingSession(prompt.code, safeRating, isReread = true)
+            db.recordEntryRatingSession(prompt.code, safeRating, isReread = true, profileId = activeProfileId)
         } else {
-            libraryRepository.setEntryRating(prompt.code, safeRating)
-            libraryRepository.setEntryRead(prompt.code, true)
+            libraryRepository.setEntryRating(prompt.code, safeRating, activeProfileId)
+            libraryRepository.setEntryRead(prompt.code, true, activeProfileId)
         }
         browserRatingPromptState = null
         clearPendingRatingRequirement()
@@ -5468,10 +6241,9 @@ class DashboardViewModel(
             setStatus("Could not access clipboard.")
             return
         }
-        clipboard.setPrimaryClip(
-            ClipData.newPlainText("Sauce Tracker code", code.toString())
-        )
-        setStatus("Copied code $code to clipboard.")
+        val displayId = sourceEntryByUiCode[code]?.entry?.key?.remoteId ?: code.toString()
+        clipboard.setPrimaryClip(ClipData.newPlainText("Sauce Tracker entry ID", displayId))
+        setStatus("Copied $displayId to clipboard.")
     }
 
     fun pasteCodeInputFromClipboard() {
@@ -5521,7 +6293,13 @@ class DashboardViewModel(
         }
         val code = prompt.code
         val newPinned = prompt.targetPinned
-        libraryRepository.setEntryPinned(code, newPinned)
+        sourceEntryByUiCode[code]?.let { row ->
+            sourceEntryStore.updateState(activeProfileId, row.entry.key, pinned = newPinned)
+            loadEntries(code, autoSelectFirst = false)
+            setStatus(if (newPinned) "Pinned ${row.entry.key.displayId}." else "Unpinned ${row.entry.key.displayId}.")
+            return
+        }
+        libraryRepository.setEntryPinned(code, newPinned, activeProfileId)
         publishLibraryChange(LibraryChange.pinChanged(code))
         setStatus(
             if (newPinned) {
@@ -5742,12 +6520,7 @@ class DashboardViewModel(
     fun exportToUri(uri: Uri, clearAfterExport: Boolean) {
         viewModelScope.launch {
             val snapshot = runCatching {
-                BackupSnapshotExport.buildSnapshotWithSettings(
-                    db = db,
-                    prefs = prefs,
-                    backupImporter = backupImporter,
-                    entryPinPriorityEnabled = entryPinPriorityEnabled
-                )
+                buildProfileAwareBackupSnapshot()
             }
             snapshot.onFailure { exc ->
                 errorDialogMessage = "Export failed:\n${exc.message ?: "unknown error"}"
@@ -5824,12 +6597,7 @@ class DashboardViewModel(
     fun exportCsvToUri(uri: Uri) {
         viewModelScope.launch {
             val snapshotResult = runCatching {
-                BackupSnapshotExport.buildSnapshotWithSettings(
-                    db = db,
-                    prefs = prefs,
-                    backupImporter = backupImporter,
-                    entryPinPriorityEnabled = entryPinPriorityEnabled
-                )
+                buildProfileAwareBackupSnapshot()
             }
             snapshotResult.onFailure { exc ->
                 errorDialogMessage = "CSV export failed:\n${exc.message ?: "unknown error"}"
@@ -5862,19 +6630,59 @@ class DashboardViewModel(
             return
         }
 
+        val profileId = activeProfileId
+        val scope = effectiveSourceScope()
+        batchDialogTitle = "Re-fetch All Entries"
+        batchCancelRequested = false
+        batchProgressState = BatchProgressState(0, 0, 0, 0, 0, null)
         viewModelScope.launch {
-            val codes = withContext(Dispatchers.IO) { libraryRepository.allEntryCodes() }
-            if (codes.isEmpty()) {
+            val rows = try {
+                withContext(Dispatchers.IO) { sourceEntryStore.allEntries(profileId, scope) }
+            } catch (error: Exception) {
+                batchProgressState = null
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                infoDialogMessage = "Could not load entries for re-fetch: ${error.message ?: "Database unavailable"}"
+                return@launch
+            }
+            if (rows.isEmpty()) {
+                batchProgressState = null
                 infoDialogMessage = "No saved entries to re-fetch."
                 setStatus("Re-fetch all skipped: no saved entries.")
                 return@launch
             }
 
-            pendingCreatorAddedCount = 0
-            pendingCreatorSkippedCount = 0
-            pendingCreatorUnresolvedCount = 0
-            setStatus("Starting re-fetch for ${codes.size} entries. This can take a while.")
-            runBatch(codes, operationName = "Re-fetch All Entries")
+            var done = 0
+            var saved = 0
+            var missing = 0
+            var failed = 0
+            val errors = mutableListOf<String>()
+            val rateLimitedSources = hashSetOf<SourceId>()
+            try {
+                for (row in rows) {
+                    if (batchCancelRequested) break
+                    // Defer this provider after HTTP 429; other providers still continue.
+                    if (row.entry.key.sourceId in rateLimitedSources) continue
+                    batchProgressState = BatchProgressState(rows.size, done, saved, missing, failed, row.entry.key.uiCode())
+                    val outcome = withContext(Dispatchers.IO) {
+                        runCatching {
+                            val refreshed = sourceRegistry.requireAdapter(row.entry.key.sourceId).fetchEntry(row.entry.key.remoteId)
+                            sourceEntryStore.upsert(refreshed, profileId)
+                        }
+                    }
+                    outcome.onSuccess { saved++ }.onFailure { error ->
+                        if (error is kotlinx.coroutines.CancellationException) throw error
+                        if (error is com.roinur.saucetracker.data.source.SourceException && error.kind == com.roinur.saucetracker.data.source.SourceFailureKind.RATE_LIMITED) rateLimitedSources += row.entry.key.sourceId
+                        if (error is com.roinur.saucetracker.data.source.SourceException && error.kind == com.roinur.saucetracker.data.source.SourceFailureKind.NOT_FOUND) missing++ else failed++
+                        errors += "${row.entry.key.sourceId}: ${error.message ?: "Provider error"}"
+                    }
+                    done++
+                    batchProgressState = BatchProgressState(rows.size, done, saved, missing, failed, null)
+                    delay(150L) // Bounded provider work, unrelated to local database pagination.
+                }
+                infoDialogMessage = "Processed $done / ${rows.size}. Updated $saved, unavailable $missing, failed $failed." +
+                    if (rateLimitedSources.isNotEmpty()) "\nRemaining entries from ${rateLimitedSources.joinToString()} deferred due to rate limiting. Retry later." else errors.firstOrNull()?.let { "\n$it" }.orEmpty()
+                if (profileId == activeProfileId) refreshAll(selectedCode)
+            } finally { batchProgressState = null }
         }
     }
 
@@ -5902,17 +6710,37 @@ class DashboardViewModel(
                 return@launch
             }
 
+            if (authorizedRestoreUri != uri.toString()) {
+                pendingRestoreUri = uri
+                restoreProfileOptions = extractRestoreProfileOptions(payload)
+                selectedRestoreProfileId = null
+                restorePreviewMessage = buildRestorePreview(payload)
+                return@launch
+            }
+            authorizedRestoreUri = null
+            pendingRestoreUri = null
+            restorePreviewMessage = null
+            val selectedProfile = selectedRestoreProfileId
+            val selectedSubscriptions = filterRestoreRows(payload.subscriptions, selectedProfile)
+            val selectedSeenCodes = filterRestoreRows(payload.subscriptionSeenCodes, selectedProfile)
+            val selectedEvents = filterRestoreRows(payload.subscriptionEvents, selectedProfile)
+            val selectedSessions = filterRestoreRows(payload.readingSessions, selectedProfile)
+
             val result = runCatching {
+                JSONObject(db.exportSnapshot().toString())
                 db.importSnapshot(
                     entries = payload.entries,
                     creators = payload.creators,
                     popularTags = payload.popularTags,
                     entryHeatmapCache = payload.entryHeatmapCache,
-                    subscriptions = payload.subscriptions,
-                    subscriptionSeenCodes = payload.subscriptionSeenCodes,
-                    subscriptionEvents = payload.subscriptionEvents,
+                    subscriptions = selectedSubscriptions,
+                    subscriptionSeenCodes = selectedSeenCodes,
+                    subscriptionEvents = selectedEvents,
                     dailyReadActivity = payload.dailyReadActivity,
-                    readingSessions = payload.readingSessions
+                    readingSessions = selectedSessions,
+                    sourcePlatform = payload.sourcePlatform,
+                    sourcePlatformProfileId = selectedProfile,
+                    targetProfileId = activeProfileId
                 )
             }
             result.onFailure { exc ->
@@ -5921,20 +6749,28 @@ class DashboardViewModel(
             }
 
             val import = result.getOrNull() ?: return@launch
-            val restoredPreferenceCount = PortablePreferences.apply(prefs, payload.portablePreferences)
-            tasteTrainingFeedback = tasteTrainingStore.load()
-            tasteTrainingFeedbackCount = tasteTrainingFeedback.size
-            tagPresets = tagPresetStore.load()
+            // Route imported legacy taste/settings to NHentai as well as entries/history.
+            // Capture the old profile first; a MangaDex profile must not inherit V1 preferences.
+            if (payload.sourcePlatform == null) selectProfile(ProfileStore.MAIN_PROFILE_ID)
+            val applyTopLevelPreferences = payload.sourcePlatform == null || selectedProfile == null
+            selectedRestoreProfileId = null
+            restoreProfileOptions = emptyList()
+            reloadProfiles(resetScope = true)
+            val restoredPreferenceCount = if (applyTopLevelPreferences) PortablePreferences.apply(prefs, payload.portablePreferences) else 0
+            if (applyTopLevelPreferences) profilePreferenceStore.capture(activeProfileId, prefs)
+            reloadProfilePreferenceState()
             if (import.insertedCodes.isNotEmpty()) {
                 import.insertedCodes.forEach { registerSessionNewEntryCode(it) }
             }
-            if (!payload.hiddenSuggestedEntries.isNullOrEmpty()) {
-                applyImportedHiddenSuggestedEntries(payload.hiddenSuggestedEntries)
-            } else {
-                payload.hiddenSuggestedCodes?.let { applyImportedHiddenSuggestedCodes(it) }
+            if (applyTopLevelPreferences) {
+                if (!payload.hiddenSuggestedEntries.isNullOrEmpty()) {
+                    applyImportedHiddenSuggestedEntries(payload.hiddenSuggestedEntries)
+                } else {
+                    payload.hiddenSuggestedCodes?.let { applyImportedHiddenSuggestedCodes(it) }
+                }
+                payload.suggestionCategoryWeights?.let { applyImportedSuggestionCategoryWeights(it) }
+                payload.entryPinPriorityEnabled?.let { applyImportedEntryPinPriority(it) }
             }
-            payload.suggestionCategoryWeights?.let { applyImportedSuggestionCategoryWeights(it) }
-            payload.entryPinPriorityEnabled?.let { applyImportedEntryPinPriority(it) }
             publishLibraryChange(
                 LibraryChange(
                     reason = LibraryChangeReason.LIBRARY_RESTORED,
@@ -6187,6 +7023,12 @@ class DashboardViewModel(
         )
     }
 
+    fun isNhentaiEntry(code: Int): Boolean = sourceEntryByUiCode[code] == null
+
+    fun entryDisplayId(code: Int): String = entries.firstOrNull { it.code == code }?.displayId
+        ?: selectedDetail?.takeIf { it.code == code }?.displayId
+        ?: code.toString()
+
     private fun publishTagFilterChange() {
         persistActiveTagFilterState()
         // Keep the selected tag and its visible count in the same Compose frame. Only the remote
@@ -6211,6 +7053,59 @@ class DashboardViewModel(
             libraryChangeFlushJob = null
             applyPendingLibraryChanges(coalescedLibraryChangeAccumulator)
         }
+    }
+
+    fun confirmPendingRestore() {
+        val uri = pendingRestoreUri ?: return
+        authorizedRestoreUri = uri.toString()
+        restorePreviewMessage = null
+        importFromUri(uri)
+    }
+
+    fun chooseRestoreProfile(profileId: String?) {
+        if (profileId == null || restoreProfileOptions.any { it.id == profileId }) selectedRestoreProfileId = profileId
+    }
+
+    fun cancelPendingRestore() {
+        pendingRestoreUri = null
+        authorizedRestoreUri = null
+        restorePreviewMessage = null
+        restoreProfileOptions = emptyList()
+        selectedRestoreProfileId = null
+        setStatus("Restore cancelled; no data was changed.")
+    }
+
+    private fun extractRestoreProfileOptions(payload: ParsedImportPayload): List<RestoreProfileOption> {
+        val rows = payload.sourcePlatform?.optJSONArray("profiles") ?: return emptyList()
+        return buildList {
+            for (index in 0 until rows.length()) {
+                val row = rows.optJSONObject(index) ?: continue
+                val id = row.optString("id").trim(); if (id.isBlank()) continue
+                add(RestoreProfileOption(id, row.optString("name").trim().ifBlank { id }))
+            }
+        }
+    }
+
+    private fun filterRestoreRows(rows: JSONArray?, profileId: String?): JSONArray? {
+        if (rows == null || profileId == null) return rows
+        return JSONArray().apply {
+            for (index in 0 until rows.length()) rows.optJSONObject(index)?.takeIf { it.optString("profile_id") == profileId }?.let(::put)
+        }
+    }
+
+    private fun buildRestorePreview(payload: ParsedImportPayload): String {
+        val platform = payload.sourcePlatform
+        if (platform == null) return "Legacy NH_TAGBOOK_EXPORT_V1\n\n${payload.entries.length()} NHentai entries and their history/settings will be restored to the NHentai default profile, regardless of the currently selected profile. Other profiles are left unchanged."
+        val profiles = platform.optJSONArray("profiles") ?: JSONArray()
+        val sources = platform.optJSONArray("sources") ?: JSONArray()
+        val entries = platform.optJSONArray("source_entries") ?: JSONArray()
+        val names = buildList {
+            for (index in 0 until profiles.length()) profiles.optJSONObject(index)?.optString("name")?.takeIf(String::isNotBlank)?.let(::add)
+        }
+        val sourceNames = buildList {
+            for (index in 0 until sources.length()) sources.optJSONObject(index)?.optString("display_name")?.takeIf(String::isNotBlank)?.let(::add)
+        }
+        return "Sauce Tracker V2 restore\n\nProfiles: ${profiles.length()}${names.take(6).joinToString(", ", prefix = if (names.isEmpty()) "" else " (", postfix = if (names.isEmpty()) "" else ")")}\nSources: ${sourceNames.ifEmpty { listOf("Not listed") }.joinToString()}\nShared entries: ${entries.length()}\nReading sessions: ${payload.readingSessions?.length() ?: 0}\nSubscriptions: ${payload.subscriptions?.length() ?: 0}\n\nRestore runs transactionally. Confirm to merge this package; Cancel leaves the database unchanged."
     }
 
     private fun applyPendingLibraryChanges(accumulator: LibraryChangeAccumulator) {
@@ -6267,9 +7162,11 @@ class DashboardViewModel(
         if (readAnalyticsLoaded && !forceRefresh) return
 
         readAnalyticsLoading = true
+        val profileId = activeProfileId
+        val sourceScope = effectiveSourceScope().map { it.value }.toSet()
         viewModelScope.launch {
             val result = withContext(Dispatchers.IO) {
-                runCatching { db.getReadAnalyticsSnapshot() }
+                runCatching { db.getReadAnalyticsSnapshot(profileId = profileId, sourceScope = sourceScope) }
             }
             result.onSuccess { snapshot ->
                 readAnalytics = snapshot
@@ -6282,20 +7179,26 @@ class DashboardViewModel(
     }
 
     suspend fun readEntriesForDay(day: LocalDate): List<DayReadEntryRow> {
+        val profileId = activeProfileId
+        val sourceScope = effectiveSourceScope().map { it.value }.toSet()
         return withContext(Dispatchers.IO) {
-            db.listReadEntriesForDay(day)
+            db.listReadEntriesForDay(day, profileId, sourceScope)
         }
     }
 
     suspend fun trendTargets(kind: TrendTargetKind, includeMisc: Boolean): List<TrendTarget> {
+        val profileId = activeProfileId
+        val sourceScope = effectiveSourceScope().map { it.value }.toSet()
         return withContext(Dispatchers.IO) {
-            heatmapRepository.trendTargets(kind, includeMisc)
+            heatmapRepository.trendTargets(kind, includeMisc, profileId, sourceScope)
         }
     }
 
     suspend fun trendSnapshot(request: TrendRequest): TrendSnapshot {
+        val profileId = activeProfileId
+        val sourceScope = effectiveSourceScope().map { it.value }.toSet()
         return withContext(Dispatchers.IO) {
-            heatmapRepository.trendSnapshot(request)
+            heatmapRepository.trendSnapshot(request, profileId, sourceScope)
         }
     }
 
@@ -6306,12 +7209,21 @@ class DashboardViewModel(
         tagGraphLoading = true
         tagGraphErrorMessage = null
         tagGraphLoadJob?.cancel()
+        val profileId = activeProfileId
+        val sourceScope = effectiveSourceScope().map { it.value }.toSet()
+        val catalogSortField = blockedTagSortField
+        val catalogSortDirection = blockedTagSortDirection
         tagGraphLoadJob = viewModelScope.launch {
             val result = withContext(Dispatchers.IO) {
-                runCatching { HeatmapEngine.computeTagGraphSnapshot(heatmapRepository.graphData()) }
+                runCatching {
+                    val catalog = readPopularTags(profileId, sourceScope, catalogSortField, catalogSortDirection)
+                    val snapshot = HeatmapEngine.computeTagGraphSnapshot(heatmapRepository.graphData(profileId, sourceScope))
+                    snapshot to catalog
+                }
             }
             if (!isActive) return@launch
-            result.onSuccess { snapshot ->
+            result.onSuccess { (snapshot, catalog) ->
+                popularTags = catalog
                 tagGraphSnapshot = snapshot
                 tagGraphLoaded = true
                 preloadTagGraphEntryThumbnails(snapshot.entryNodes)
@@ -6403,10 +7315,12 @@ class DashboardViewModel(
         entryHeatmapCacheCompletionSummary = null
         entryHeatmapCacheProgressLabel = "Building tag graph snapshot..."
         entryHeatmapCacheProgressFraction = 0.08f
+        val profileId = activeProfileId
+        val sourceScope = effectiveSourceScope().map { it.value }.toSet()
         viewModelScope.launch {
             setStatus("Recalculating entry heatmap cache. This is hardware intensive and may make the phone feel hot or sluggish until it finishes.")
             val snapshotResult = withContext(Dispatchers.Default) {
-                runCatching { HeatmapEngine.computeTagGraphSnapshot(heatmapRepository.graphData()) }
+                runCatching { HeatmapEngine.computeTagGraphSnapshot(heatmapRepository.graphData(profileId, sourceScope)) }
             }
             snapshotResult.onFailure { exc ->
                 entryHeatmapCacheRecalculationRunning = false
@@ -6479,43 +7393,9 @@ class DashboardViewModel(
     }
 
     fun prepareTagGraphData() {
-        loadPopularTags()
-        if (popularTags.isEmpty()) {
-            if (popularTagsFetchInProgress) return
-            popularTagsFetchInProgress = true
-            viewModelScope.launch {
-                setStatus("Fetching popular tags for graph...")
-                val result = withContext(Dispatchers.IO) {
-                    runCatching { client.fetchAllPopularTags() }
-                }
-                val payload = result.getOrNull()
-                if (payload != null) {
-                    withContext(Dispatchers.IO) {
-                        db.replacePopularTags(payload.tags)
-                    }
-                    loadPopularTags()
-                    tagGraphLoaded = false
-                    tagGraphSnapshot = null
-                    ensureTagGraphLoaded(forceRefresh = true)
-                    updateEntryHeatmapCacheStatus(null)
-                    setStatus(
-                        if (payload.tags.isEmpty()) {
-                            "No popular tags were found on nhentai."
-                        } else {
-                            "Fetched ${payload.tags.size} tags across ${payload.pagesFetched} page(s) for graph."
-                        }
-                    )
-                } else {
-                    val exc = result.exceptionOrNull()
-                    errorDialogMessage = exc?.message ?: "Failed to fetch popular tags."
-                    setStatus("Fetching popular tags failed.")
-                    updateEntryHeatmapCacheStatus(null)
-                }
-                popularTagsFetchInProgress = false
-            }
-        } else {
-            ensureTagGraphLoaded(forceRefresh = false)
-        }
+        // All graph data already exists in the local, scoped library. No provider must be online.
+        // Catalog preparation runs in the graph job, never on the caller's UI thread.
+        ensureTagGraphLoaded(forceRefresh = false)
     }
 
     private fun preloadAllOnLaunch() {
@@ -6528,71 +7408,17 @@ class DashboardViewModel(
                     totalSteps = totalSteps
                 )
 
-                val textSnapshot = effectiveEntrySearch()
-                val tagSnapshot = activeTagFilterIds.toList()
-                val loadedEntries = withContext(Dispatchers.IO) {
-                    libraryRepository.entries(
-                        textFilter = textSnapshot,
-                        tagFilterIds = tagSnapshot,
-                        sortField = sortField,
-                        sortDirection = sortDirection,
-                        readFilter = entryReadFilter,
-                        prioritizePinned = entryPinPriorityEnabled
-                    )
-                }
-
-                val targetCode = when {
-                    selectedCode != null && loadedEntries.any { it.code == selectedCode } -> selectedCode
-                    loadedEntries.size == 1 -> loadedEntries.first().code
-                    else -> null
-                }
-                val detail = withContext(Dispatchers.IO) {
-                    targetCode?.let { libraryRepository.entryDetail(it) }
-                }
-
-                entries = loadedEntries
-                selectedCode = targetCode
-                selectedSummary = targetCode?.let { target ->
-                    loadedEntries.firstOrNull { it.code == target }
-                }
-                selectedDetail = detail
-                selectedDetailLoading = false
-                scheduleSelectedEntrySupport(targetCode, detail)
+                // Reuse the same profile/source projection as normal library navigation.
+                // Warmup must not temporarily replace it with the global NHentai library.
+                withContext(Dispatchers.IO) { loadEntries(selectedCode) }
+                val loadedEntries = entries.toList()
                 startupPreloadState = StartupPreloadState(
                     phase = "Loading tags...",
                     completedSteps = 1,
                     totalSteps = totalSteps
                 )
 
-                val loadedTags = withContext(Dispatchers.IO) {
-                    libraryRepository.tags(
-                        textFilter = textSnapshot,
-                        sortField = tagSortField,
-                        sortDirection = tagSortDirection,
-                        visibleEntryCodes = loadedEntries.map { it.code }
-                    )
-                }
-                tags = loadedTags
-                loadedTags.forEach { tag ->
-                    tagNameCache[tag.id] = tag.name
-                    tagRouteCache[tag.id] = TagRouteRef(name = tag.name, type = tag.type)
-                }
-
-                val filtered = activeTagFilterIds.filter { tagId ->
-                    val ref = libraryRepository.tagRoute(tagId)
-                    if (ref != null) {
-                        tagNameCache[tagId] = ref.name
-                        tagRouteCache[tagId] = ref
-                        true
-                    } else {
-                        false
-                    }
-                }
-                if (filtered.size != activeTagFilterIds.size) {
-                    activeTagFilterIds.clear()
-                    activeTagFilterIds.addAll(filtered)
-                    persistActiveTagFilterState()
-                }
+                withContext(Dispatchers.IO) { loadTags() }
 
                 startupPreloadState = StartupPreloadState(
                     phase = "Loading artists/groups...",
@@ -6600,35 +7426,7 @@ class DashboardViewModel(
                     totalSteps = totalSteps
                 )
 
-                val loadedCreators = withContext(Dispatchers.IO) {
-                    libraryRepository.creators(
-                        textFilter = effectiveEntrySearch(),
-                        tagFilterIds = activeTagFilterIds.toList(),
-                        sortField = creatorSortField,
-                        sortDirection = creatorSortDirection
-                    )
-                }
-                creators = loadedCreators
-                val validIds = loadedCreators.map { it.id }.toSet()
-                if (expandedCreatorIds.any { it !in validIds }) {
-                    val removed = expandedCreatorIds.filter { it !in validIds }
-                    removed.forEach { removedId ->
-                        creatorLoadJobs.remove(removedId)?.cancel()
-                        loadingCreatorIds.remove(removedId)
-                    }
-                    val retained = expandedCreatorIds.filter { it in validIds }
-                    expandedCreatorIds.clear()
-                    expandedCreatorIds.addAll(retained)
-                }
-                creatorEntriesById = creatorEntriesById.filterKeys { it in validIds && it in expandedCreatorIds }
-                loadingCreatorIds.retainAll(validIds)
-                if (expandedCreatorIds.isEmpty()) {
-                    creatorEntriesById = emptyMap()
-                    loadingCreatorIds.clear()
-                    creatorLoadJobs.values.forEach { it.cancel() }
-                    creatorLoadJobs.clear()
-                    creatorEntryFilterKey = buildCreatorEntryFilterKey()
-                }
+                withContext(Dispatchers.IO) { loadCreators() }
 
                 savedStats = withContext(Dispatchers.IO) { db.getSavedStats() }
 
@@ -6726,6 +7524,8 @@ class DashboardViewModel(
                     }
                 }
 
+                // Refresh counts after warming the shared thumbnail conveyor.
+                refreshAll(selectedCode)
                 setStatus(
                     if (showThumbnails) {
                         "Launch preload complete: entries, tags, artists/groups, and thumbnails."
@@ -6752,18 +7552,78 @@ class DashboardViewModel(
         autoSelectFirst: Boolean = true,
         forceIncludeCode: Int? = null
     ) {
-        val rawEntries = libraryRepository.entries(
-            textFilter = effectiveEntrySearch(),
-            tagFilterIds = activeTagFilterIds.toList(),
+        clearRedundantSourceTagFilters()
+        val rawEntries = if (SourceId("nhentai") in effectiveSourceScope()) libraryRepository.entries(
+            // Structured filters use profile state in the source-aware query below,
+            // never the legacy global rating/read state.
+            textFilter = "",
+            tagFilterIds = emptyList(),
             sortField = sortField,
             sortDirection = sortDirection,
-            readFilter = entryReadFilter,
-            prioritizePinned = entryPinPriorityEnabled
+            readFilter = EntryReadFilterMode.ALL,
+            prioritizePinned = false
+        ) else emptyList()
+        val fetchedSourceRows = sourceEntryStore.allEntries(
+            profileId = activeProfileId,
+            sourceScope = effectiveSourceScope(),
+            text = effectiveEntrySearch()
         )
+        val selectedTagRefs = activeTagFilterIds.mapNotNull(libraryRepository::tagRoute)
+        val allSourceRows = if (selectedTagRefs.isEmpty()) fetchedSourceRows else fetchedSourceRows.filter { row ->
+            selectedTagRefs.all { ref ->
+                val normalizedName = normalizeTagName(ref.name)
+                val normalizedType = ref.type.trim().lowercase(Locale.US)
+                when {
+                    normalizedType == "source" -> {
+                        com.roinur.saucetracker.data.source.normalizeSourceName(row.entry.key.sourceId.value) == com.roinur.saucetracker.data.source.normalizeSourceName(ref.name)
+                    }
+                    normalizedType in setOf("artist", "author", "group", "creator") -> {
+                        row.entry.creators.any { creator ->
+                            normalizeTagName(creator.name) == normalizedName &&
+                                (normalizedType == "creator" || creator.type.equals(normalizedType, ignoreCase = true))
+                        }
+                    }
+                    else -> {
+                        row.entry.tags.any { tag ->
+                            normalizeTagName(tag.name) == normalizedName && tag.type.equals(normalizedType, ignoreCase = true)
+                        }
+                    }
+                }
+            }
+        }
+        sourceLibraryEntries = allSourceRows
+        val profileStates = if (SourceId("nhentai") in effectiveSourceScope()) sourceEntryStore.statesForSource(activeProfileId, SourceId("nhentai")) else emptyMap()
+        val allowedNhentaiCodes = allSourceRows.asSequence()
+            .filter { it.entry.key.sourceId.value == "nhentai" }
+            .mapNotNull { it.entry.key.remoteId.toIntOrNull() }
+            .toSet()
+        val nhentaiEntries = rawEntries.mapNotNull { row ->
+            if (row.code !in allowedNhentaiCodes) return@mapNotNull null
+            val state = profileStates[row.code.toString()] ?: return@mapNotNull null
+            row.copy(rating = state.rating, averageRating = state.rating.toFloat(), isRead = state.isRead, pinned = state.pinned, addedAt = state.addedAt, fetchedAt = state.fetchedAt)
+        }
+        val reservedCodes = nhentaiEntries.mapTo(mutableSetOf()) { it.code }
+        val indexedSourceRows = linkedMapOf<Int, ProfileSourceEntry>()
+        allSourceRows.filterNot { it.entry.key.sourceId.value == "nhentai" }.forEach { sourceRow ->
+            var uiCode = sourceRow.entry.key.uiCode().coerceAtLeast(1)
+            while (uiCode in reservedCodes || uiCode in indexedSourceRows) {
+                uiCode = if (uiCode == Int.MAX_VALUE) 1_000_000_000 else uiCode + 1
+            }
+            indexedSourceRows[uiCode] = sourceRow
+        }
+        sourceEntryByUiCode = indexedSourceRows
+        val sourceEntries = indexedSourceRows.map { (uiCode, row) -> sourceEntryRow(uiCode, row) }
+        val profileEntries = sortProfileEntries(nhentaiEntries + sourceEntries)
         val filteredEntries = if (entryReadFilter == EntryReadFilterMode.DOWNLOADED) {
-            rawEntries.filter { row -> row.code in entryDownloadController.downloadedCodes }
+            profileEntries.filter { row -> row.code in entryDownloadController.downloadedCodes }
         } else {
-            rawEntries
+            profileEntries.filter { row ->
+                when (entryReadFilter) {
+                    EntryReadFilterMode.READ -> row.isRead
+                    EntryReadFilterMode.UNREAD -> !row.isRead
+                    else -> true
+                }
+            }
         }
         val forcedEntry = forceIncludeCode
             ?.takeIf { target -> filteredEntries.none { it.code == target } }
@@ -6782,17 +7642,108 @@ class DashboardViewModel(
         selectedSummary = targetCode?.let { target ->
             entries.firstOrNull { it.code == target }
         }
-        selectedDetail = targetCode?.let { libraryRepository.entryDetail(it) }
+        selectedDetail = targetCode?.let { code ->
+            sourceEntryByUiCode[code]?.let { sourceEntryDetail(code, it) }
+                ?: libraryRepository.entryDetail(code)?.let { detail ->
+                profileStates[code.toString()]?.let { state -> detail.copy(rating = state.rating, isRead = state.isRead, readAt = state.readAt, addedAt = state.addedAt, fetchedAt = state.fetchedAt) } ?: detail
+            }
+        }
         selectedDetailLoading = false
-        scheduleSelectedEntrySupport(targetCode, selectedDetail)
+        if (selectedDetail?.isNhentai != false) scheduleSelectedEntrySupport(targetCode, selectedDetail)
+        else {
+            selectedSeriesNeighbors = SeriesNeighbors()
+            selectedEntryRelatedUiState = SelectedEntryRelatedUiState()
+        }
+    }
+
+    private fun clearRedundantSourceTagFilters() {
+        if (activeProfile?.sourceIds.orEmpty().size > 1 || activeTagFilterIds.isEmpty()) return
+        val redundant = activeTagFilterIds.filter { tagId ->
+            libraryRepository.tagRoute(tagId)?.type.equals("source", ignoreCase = true)
+        }
+        if (redundant.isEmpty()) return
+        activeTagFilterIds.removeAll(redundant.toSet())
+        redundant.forEach { tagId ->
+            tagNameCache.remove(tagId)
+            tagRouteCache.remove(tagId)
+        }
+        persistActiveTagFilterState()
+    }
+
+    private fun sourceEntryRow(uiCode: Int, row: ProfileSourceEntry): EntryRow {
+        val entry = row.entry
+        val state = row.state
+        return EntryRow(
+            code = uiCode,
+            title = entry.title,
+            numPages = entry.unitCount,
+            uploadDate = entry.publishedAt,
+            addedAt = state.addedAt,
+            rating = state.rating.coerceIn(0, 5),
+            averageRating = state.rating.coerceIn(0, 5).toFloat(),
+            isRead = state.isRead,
+            pinned = state.pinned,
+            fetchedAt = state.fetchedAt,
+            sourceUrl = entry.canonicalUrl,
+            thumbnailUrl = entry.thumbnailUrl,
+            tags = entry.tags.joinToString(", ") { it.name },
+            sourceId = entry.key.sourceId.value,
+            remoteId = entry.key.remoteId,
+            unitLabel = entry.unitLabel
+        )
+    }
+
+    private fun sourceEntryDetail(uiCode: Int, row: ProfileSourceEntry): EntryDetail {
+        val entry = row.entry
+        val state = row.state
+        val tags = linkedMapOf<String, MutableList<String>>()
+        entry.tags.forEach { tag -> tags.getOrPut(tag.type.ifBlank { "tag" }) { mutableListOf() }.add(tag.name) }
+        entry.creators.forEach { creator -> tags.getOrPut(creator.type.ifBlank { "author" }) { mutableListOf() }.add(creator.name) }
+        return EntryDetail(
+            code = uiCode,
+            title = entry.title,
+            subtitle = entry.alternateTitles.firstOrNull().orEmpty(),
+            sourceUrl = entry.canonicalUrl,
+            mediaId = 0,
+            coverExt = "jpg",
+            numPages = entry.unitCount,
+            uploadDate = entry.publishedAt,
+            rating = state.rating.coerceIn(0, 5),
+            isRead = state.isRead,
+            readAt = state.readAt,
+            fetchedAt = state.fetchedAt,
+            addedAt = state.addedAt,
+            thumbnailUrl = entry.thumbnailUrl,
+            tagsByType = tags.mapValues { (_, names) -> names.distinct() },
+            sourceId = entry.key.sourceId.value,
+            remoteId = entry.key.remoteId,
+            unitLabel = entry.unitLabel,
+            remoteStatus = entry.status
+        )
+    }
+
+    private fun sortProfileEntries(rows: List<EntryRow>): List<EntryRow> {
+        val base = when (sortField) {
+            EntrySortField.RATING -> compareBy<EntryRow> { it.rating }.thenBy { it.addedAt }.thenBy { it.code }
+            EntrySortField.CODE -> compareBy { it.code }
+            EntrySortField.TITLE -> compareBy<EntryRow> { it.title.lowercase(Locale.US) }.thenBy { it.code }
+            EntrySortField.PAGES -> compareBy<EntryRow> { it.numPages }.thenBy { it.code }
+            EntrySortField.UPLOAD -> compareBy<EntryRow> { it.uploadDate }.thenBy { it.code }
+            EntrySortField.ADDED -> compareBy<EntryRow> { it.addedAt }.thenBy { it.code }
+            EntrySortField.READ -> compareBy<EntryRow> { it.isRead }.thenBy { it.addedAt }.thenBy { it.code }
+            null -> compareBy<EntryRow> { it.addedAt }.thenBy { it.code }
+        }
+        val directed = if (sortDirection == SortDirection.ASC) base else base.reversed()
+        val sorted = rows.sortedWith(directed)
+        return if (entryPinPriorityEnabled) sorted.sortedByDescending { it.pinned } else sorted
     }
 
     private fun loadTags() {
-        tags = libraryRepository.tags(
-            textFilter = effectiveEntrySearch(),
+        tags = sourceEntryStore.tagCounts(
+            rows = visibleSourceRows(),
             sortField = tagSortField,
             sortDirection = tagSortDirection,
-            visibleEntryCodes = entries.map { it.code }
+            includeSourceTags = activeProfile?.sourceIds.orEmpty().size > 1
         )
 
         tags.forEach { tag ->
@@ -6822,16 +7773,33 @@ class DashboardViewModel(
     }
 
     private fun loadPopularTags() {
-        popularTags = db.listPopularTags(
-            sortField = blockedTagSortField,
-            sortDirection = blockedTagSortDirection
+        popularTags = readPopularTags(
+            activeProfileId,
+            effectiveSourceScope().mapTo(linkedSetOf()) { it.value },
+            blockedTagSortField,
+            blockedTagSortDirection
+        )
+    }
+
+    private fun readPopularTags(
+        profileId: String,
+        sourceScope: Set<String>,
+        sortField: TagSortField,
+        sortDirection: SortDirection
+    ): List<PopularTagRow> {
+        val local = db.profileTagCatalog(profileId, sourceScope)
+        val catalog = db.listPopularTags(TagSortField.NAME, SortDirection.ASC)
+        val missing = missingPopularTags(local, catalog)
+        if (missing.isNotEmpty()) db.mergePopularTags(missing)
+        return db.listPopularTags(
+            sortField = sortField,
+            sortDirection = sortDirection
         )
     }
 
     private fun loadCreators() {
-        creators = libraryRepository.creators(
-            textFilter = effectiveEntrySearch(),
-            tagFilterIds = activeTagFilterIds.toList(),
+        creators = sourceEntryStore.creators(
+            rows = visibleSourceRows(),
             sortField = creatorSortField,
             sortDirection = creatorSortDirection
         )
@@ -6869,17 +7837,22 @@ class DashboardViewModel(
 
     private fun reloadSubscriptionsState() {
         viewModelScope.launch {
-            val loadedSubscriptions = withContext(Dispatchers.IO) { subscriptionRepository.list() }
-            val loadedEvents = withContext(Dispatchers.IO) { subscriptionRepository.events() }
-            subscriptions = loadedSubscriptions
-            subscriptionEvents = loadedEvents
+            reloadSubscriptionsStateNow()
+        }
+    }
+
+    private suspend fun reloadSubscriptionsStateNow() {
+        val (loadedSubscriptions, loadedEvents) = withContext(Dispatchers.IO) {
+            subscriptionRepository.list() to subscriptionRepository.events()
+        }
+        subscriptions = loadedSubscriptions
+        subscriptionEvents = loadedEvents
         syncSubscriptionBackgroundWork(
             context = getApplication<Application>().applicationContext,
             hasSubscriptions = loadedSubscriptions.isNotEmpty(),
             intervalHours = subscriptionRefreshIntervalHours
         )
-            syncSubscriptionNotificationSummary()
-        }
+        syncSubscriptionNotificationSummary()
     }
 
     private suspend fun maybeAutoRefreshSubscriptions() {
@@ -6902,7 +7875,15 @@ class DashboardViewModel(
     fun isRouteSubscribed(routeType: String, routeName: String): Boolean {
         val key = subscriptionRouteKey(routeType, routeName)
         if (key.isBlank()) return false
-        return subscriptions.any { subscriptionRouteKey(it.routeType, it.routeName) == key }
+        val targetSourceIds = effectiveSourceScope()
+            .filter { sourceId -> sourceSupportsSubscription(sourceId, routeType) }
+            .mapTo(linkedSetOf()) { it.value }
+        if (targetSourceIds.isEmpty()) return false
+        val subscribedSourceIds = subscriptions.asSequence()
+            .filter { it.profileId == activeProfileId }
+            .filter { subscriptionRouteKey(it.routeType, it.routeName) == key }
+            .mapTo(mutableSetOf()) { it.sourceId }
+        return targetSourceIds.all(subscribedSourceIds::contains)
     }
 
     fun subscriptionForRoute(routeType: String, routeName: String): SubscriptionRow? {
@@ -7038,29 +8019,70 @@ class DashboardViewModel(
         val normalizedType = normalizeSubscriptionRouteType(routeType)
         val normalizedName = normalizeSubscriptionRouteName(normalizedType, routeName)
         if (normalizedType.isBlank() || normalizedName.isBlank()) return
+        val targetSources = effectiveSourceScope()
+            .filter { sourceId -> sourceSupportsSubscription(sourceId, normalizedType) }
+            .sortedBy(SourceId::value)
+        if (targetSources.isEmpty()) {
+            setStatus("Subscriptions are not supported by the active source scope.")
+            return
+        }
         viewModelScope.launch {
             val existing = withContext(Dispatchers.IO) {
-                subscriptionRepository.find(normalizedType, normalizedName)
-            }
-            if (existing != null) {
-                withContext(Dispatchers.IO) {
-                    subscriptionRepository.remove(existing.id)
+                targetSources.mapNotNull { sourceId ->
+                    db.findSubscription(normalizedType, normalizedName, activeProfileId, sourceId.value)
                 }
-                reloadSubscriptionsState()
+            }
+            if (existing.size == targetSources.size) {
+                withContext(Dispatchers.IO) {
+                    existing.forEach { subscriptionRepository.remove(it.id) }
+                }
+                reloadSubscriptionsStateNow()
                 setStatus("Unsubscribed from ${subscriptionRouteDisplayLabel(normalizedType, normalizedName)}.")
             } else {
                 val created = withContext(Dispatchers.IO) {
-                    subscriptionRepository.upsert(normalizedType, normalizedName)
+                    targetSources
+                        .filterNot { sourceId -> existing.any { it.sourceId == sourceId.value } }
+                        .mapNotNull { sourceId ->
+                            db.upsertSubscription(normalizedType, normalizedName, activeProfileId, sourceId.value)
+                        }
                 }
-                reloadSubscriptionsState()
-                if (created == null) {
+                // Update Compose state before provider initialization starts, so the
+                // bell becomes selected immediately instead of waiting on the network.
+                reloadSubscriptionsStateNow()
+                if (created.isEmpty() && existing.isEmpty()) {
                     setStatus("Could not subscribe to ${subscriptionRouteDisplayLabel(normalizedType, normalizedName)}.")
                 } else {
                     setStatus("Subscribed to ${subscriptionRouteDisplayLabel(normalizedType, normalizedName)}. Initial sync is running.")
-                    initializeSubscription(created)
+                    val failedSources = mutableListOf<String>()
+                    created.forEach { subscription ->
+                        runCatching {
+                            if (subscription.sourceId == "nhentai") {
+                                initializeSubscription(subscription)
+                            } else {
+                                refreshSingleSubscriptionInternal(subscription)
+                            }
+                        }.onFailure {
+                            failedSources += subscription.sourceId
+                        }
+                    }
+                    reloadSubscriptionsStateNow()
+                    if (failedSources.isNotEmpty()) {
+                        setStatus(
+                            "Subscribed to ${subscriptionRouteDisplayLabel(normalizedType, normalizedName)}. " +
+                                "Initial sync for ${failedSources.distinct().joinToString()} was delayed; Refresh can retry it."
+                        )
+                    }
                 }
             }
         }
+    }
+
+    fun canSubscribeRoute(routeType: String): Boolean = effectiveSourceScope().any { sourceSupportsSubscription(it, routeType) }
+
+    private fun sourceSupportsSubscription(source: SourceId, routeType: String): Boolean {
+        val field = com.roinur.saucetracker.data.source.sourceQueryField(routeType) ?: return false
+        val adapter = sourceRegistry.adapter(source) ?: return false
+        return adapter.supports(SourceCapability.SUBSCRIPTIONS) && adapter.supportsQueryField(field) && field != SourceQueryField.SOURCE
     }
 
     fun updateSubscriptionSettings(
@@ -7134,8 +8156,34 @@ class DashboardViewModel(
         }
     }
 
+    fun importSubscriptionEvent(event: SubscriptionEventRow) {
+        if (event.sourceId == "nhentai") {
+            importSuggestedEntry(event.code)
+            return
+        }
+        viewModelScope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    val sourceId = SourceId(event.sourceId)
+                    val entry = sourceRegistry.requireAdapter(sourceId).fetchEntry(event.remoteId)
+                    sourceEntryStore.upsert(entry, activeProfileId)
+                }
+            }.onSuccess {
+                loadSourceLibrary()
+                refreshAll(null)
+                setStatus("Added ${event.title} to ${activeProfile?.name ?: "profile"}.")
+            }.onFailure { error -> errorDialogMessage = error.message ?: "Could not add subscription item." }
+        }
+    }
+
     fun importSubscriptionEvent(code: Int) {
-        importSuggestedEntry(code)
+        val event = subscriptionEvents.firstOrNull { it.code == code }
+        if (event != null) importSubscriptionEvent(event) else importSuggestedEntry(code)
+    }
+
+    fun openSubscriptionEvent(event: SubscriptionEventRow) {
+        if (event.sourceId == "nhentai") openSuggestedEntryInBrowser(event.code)
+        else openSourceBrowser(SourceId(event.sourceId), event.remoteId)
     }
 
     private suspend fun initializeSubscription(subscription: SubscriptionRow) {
@@ -7165,7 +8213,7 @@ class DashboardViewModel(
             var failedCount = 0
             for (subscription in subscriptionSnapshot) {
                 try {
-                    newEventCount += subscriptionSyncUseCase.refresh(subscription)
+                    newEventCount += refreshSingleSubscriptionInternal(subscription)
                 } catch (_: Throwable) {
                     failedCount += 1
                     withContext(Dispatchers.IO) {
@@ -7229,7 +8277,44 @@ class DashboardViewModel(
     }
 
     private suspend fun refreshSingleSubscriptionInternal(subscription: SubscriptionRow): Int {
-        return subscriptionSyncUseCase.refresh(subscription)
+        if (subscription.sourceId == "nhentai") return subscriptionSyncUseCase.refresh(subscription)
+        val sourceId = SourceId(subscription.sourceId)
+        val field = when (subscription.routeType) {
+            "tag" -> SourceQueryField.TAG
+            "artist" -> SourceQueryField.ARTIST
+            "author" -> SourceQueryField.AUTHOR
+            "group" -> SourceQueryField.GROUP
+            "character" -> SourceQueryField.CHARACTER
+            "parody" -> SourceQueryField.PARODY
+            "language" -> SourceQueryField.LANGUAGE
+            "category" -> SourceQueryField.CATEGORY
+            else -> throw IllegalArgumentException("Unsupported subscription route.")
+        }
+        val entries = withContext(Dispatchers.IO) {
+            sourceRegistry.requireAdapter(sourceId).search(
+                SourceQuery(
+                    terms = listOf(SourceQueryTerm(field, subscription.routeName)),
+                    sort = com.roinur.saucetracker.data.source.SourceSortMode.RECENT
+                ),
+                offset = 0,
+                limit = 24
+            ).entries
+        }
+        val codes = entries.map { it.key.uiCode() }
+        return withContext(Dispatchers.IO) {
+            if (!subscription.initialized) {
+                if (codes.isNotEmpty()) subscriptionRepository.addSeenCodes(subscription.id, codes)
+                subscriptionRepository.markInitialized(subscription.id)
+                0
+            } else {
+                val seen = subscriptionRepository.seenCodes(subscription.id)
+                val unseen = entries.filter { it.key.uiCode() !in seen }.take(24)
+                val inserted = db.insertSourceSubscriptionEvents(subscription.id, unseen)
+                if (codes.isNotEmpty()) subscriptionRepository.addSeenCodes(subscription.id, codes)
+                subscriptionRepository.markChecked(subscription.id)
+                inserted
+            }
+        }
     }
 
     private fun syncSubscriptionNotificationSummary() {
@@ -7239,7 +8324,8 @@ class DashboardViewModel(
 
     private fun buildCreatorEntryFilterKey(): String {
         val tags = activeTagFilterIds.toList().sorted().joinToString(",")
-        return "${effectiveEntrySearch()}|$tags"
+        val sources = effectiveSourceScope().map { it.value }.sorted().joinToString(",")
+        return "$activeProfileId|$sources|${effectiveEntrySearch()}|$tags"
     }
 
     private fun ensureCreatorEntriesLoaded(tagId: Long, forceRefresh: Boolean) {
@@ -7255,15 +8341,24 @@ class DashboardViewModel(
         val tagFilterSnapshot = activeTagFilterIds.toList()
         creatorLoadJobs[tagId] = viewModelScope.launch {
             val rows = withContext(Dispatchers.IO) {
-                libraryRepository.creatorEntries(
-                    tagId = tagId,
-                    textFilter = searchSnapshot,
-                    tagFilterIds = tagFilterSnapshot
-                )
+                if (com.roinur.saucetracker.data.source.sourceTermStorageId(tagId) != null) {
+                    sourceEntryStore.creatorEntries(
+                        rows = sourceLibraryEntries,
+                        creatorUiId = tagId,
+                        uiCodesByKey = currentUiCodesBySourceKey()
+                    )
+                } else {
+                    libraryRepository.creatorEntries(
+                        tagId = tagId,
+                        textFilter = searchSnapshot,
+                        tagFilterIds = tagFilterSnapshot
+                    )
+                }
             }
 
             if (expandedCreatorIds.contains(tagId)) {
-                creatorEntriesById = creatorEntriesById + (tagId to rows)
+                val visibleCodes = entries.mapTo(hashSetOf()) { it.code }
+                creatorEntriesById = creatorEntriesById + (tagId to rows.filter { it.code in visibleCodes })
             }
             loadingCreatorIds.remove(tagId)
             creatorLoadJobs.remove(tagId)
@@ -7381,6 +8476,18 @@ class DashboardViewModel(
     private fun scheduleSelectedEntrySupport(code: Int?, detailHint: EntryDetail?) {
         scheduleSeriesNeighborComputation(code, detailHint)
         scheduleSelectedEntryRelatedEntries(code)
+    }
+
+    private fun currentUiCodesBySourceKey(): Map<SourceEntryKey, Int> = buildMap {
+        this@DashboardViewModel.entries.filter { it.sourceId == "nhentai" }.forEach { row ->
+            put(SourceEntryKey(SourceId("nhentai"), row.remoteId.ifBlank { row.code.toString() }), row.code)
+        }
+        sourceEntryByUiCode.forEach { (uiCode, row) -> put(row.entry.key, uiCode) }
+    }
+
+    private fun visibleSourceRows(): List<ProfileSourceEntry> {
+        val visibleKeys = currentUiCodesBySourceKey().filterValues { code -> entries.any { it.code == code } }.keys
+        return sourceLibraryEntries.filter { it.entry.key in visibleKeys }
     }
 
     private fun scheduleSelectedEntryRelatedEntries(code: Int?) {

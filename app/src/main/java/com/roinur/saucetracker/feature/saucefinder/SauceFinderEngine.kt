@@ -26,21 +26,6 @@ internal class SauceFinderEngine(
     fun stats(): SauceFinderIndexStats = store.stats()
 
     fun indexAvailableLocalImages(details: List<EntryDetail>, onProgress: (Int, Int) -> Unit) {
-        details.forEach { detail ->
-            if (!store.contains(detail.code, 0)) {
-                DuplicateLocalHashIndex.get(detail.code)?.let { hash ->
-                    store.put(
-                        SauceFinderIndexRecord(
-                            entryCode = detail.code,
-                            pageNumber = 0,
-                            source = "cover-cache",
-                            fingerprint = SauceImageFingerprint(LongArray(5) { hash })
-                        )
-                    )
-                }
-            }
-        }
-
         val detailsByCode = details.associateBy(EntryDetail::code)
         val downloadedCodes = listDownloadedGalleryCodes(context).filter { it in detailsByCode }
         downloadedCodes.forEachIndexed { codeIndex, code ->
@@ -62,10 +47,20 @@ internal class SauceFinderEngine(
             }
             onProgress(codeIndex + 1, downloadedCodes.size)
         }
+        sauceFinderIndexOrder(details, { it.code in downloadedCodes }, EntryDetail::isRead).forEach { detail ->
+            if (!store.contains(detail.code, 0)) {
+                DuplicateLocalHashIndex.get(detail.code)?.let { hash ->
+                    store.put(SauceFinderIndexRecord(detail.code, 0, "cover-cache", SauceImageFingerprint(LongArray(5) { hash })))
+                }
+            }
+        }
     }
 
     suspend fun buildFullIndex(details: List<EntryDetail>, onProgress: (Int, Int) -> Unit) = coroutineScope {
-        val total = details.sumOf { it.numPages.coerceAtLeast(0) + 1 }.coerceAtLeast(1)
+        val downloadedCodes = listDownloadedGalleryCodes(context).toSet()
+        val ordered = sauceFinderIndexOrder(details, { it.code in downloadedCodes }, EntryDetail::isRead)
+        // Chapter counts are not page counts. MangaDex covers can be indexed without downloading chapters.
+        val total = ordered.sumOf { if (it.isNhentai) it.numPages.coerceAtLeast(0) + 1 else 1 }.coerceAtLeast(1)
         val completed = AtomicInteger(0)
         val progressLock = Any()
         fun markCompleted() {
@@ -99,8 +94,8 @@ internal class SauceFinderEngine(
         }
 
         try {
-            details.forEach { detail ->
-                for (pageNumber in 0..detail.numPages.coerceAtLeast(0)) {
+            ordered.forEach { detail ->
+                for (pageNumber in 0..if (detail.isNhentai) detail.numPages.coerceAtLeast(0) else 0) {
                     if (store.contains(detail.code, pageNumber)) {
                         markCompleted()
                     } else {
@@ -175,6 +170,7 @@ internal class SauceFinderEngine(
     }
 
     private fun coverCandidates(detail: EntryDetail): List<String> {
+        if (!detail.isNhentai) return listOf(detail.thumbnailUrl).filter(String::isNotBlank)
         if (detail.mediaId <= 0L) return emptyList()
         val preferred = detail.coverExt.trim().lowercase().ifBlank { "jpg" }
         return listOf(preferred, "jpg", "png", "webp").distinct()

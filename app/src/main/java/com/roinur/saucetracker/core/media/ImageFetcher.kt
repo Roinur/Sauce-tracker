@@ -353,12 +353,7 @@ private fun fetchThumbnailBitmapRawOnce(
 ): Bitmap? {
     val request = Request.Builder()
         .url(url)
-        .header(
-            "User-Agent",
-            "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36"
-        )
-        .header("Accept", "image/avif,image/webp,image/apng,image/*,*/*;q=0.8")
-        .header("Referer", "https://nhentai.net/")
+        .applySourceImageHeaders(url)
         .build()
 
     thumbnailFetchSlots.acquire()
@@ -366,14 +361,61 @@ private fun fetchThumbnailBitmapRawOnce(
         return client.newCall(request).execute().use { rsp ->
             if (!rsp.isSuccessful) return null
             val bytes = rsp.body?.bytes() ?: return null
-            val options = BitmapFactory.Options().apply {
-                inPreferredConfig = android.graphics.Bitmap.Config.RGB_565
-                inSampleSize = if (lowRes) 2 else 1
-            }
-            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
+            decodeBoundedThumbnail(bytes, lowRes = lowRes)
         }
     } finally {
         thumbnailFetchSlots.release()
+    }
+}
+
+internal fun Request.Builder.applySourceImageHeaders(url: String): Request.Builder {
+    header(
+        "User-Agent",
+        "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36"
+    )
+    header("Accept", "image/avif,image/webp,image/apng,image/*,*/*;q=0.8")
+    val normalized = url.lowercase(Locale.US)
+    when {
+        "uploads.mangadex.org/" in normalized -> header("Referer", "https://mangadex.org/")
+        "nhentai.net/" in normalized -> header("Referer", "https://nhentai.net/")
+        else -> removeHeader("Referer")
+    }
+    return this
+}
+
+internal fun decodeBoundedThumbnail(
+    bytes: ByteArray,
+    lowRes: Boolean = false,
+    maxDimensionPx: Int = if (lowRes) 256 else 640
+): Bitmap? {
+    if (bytes.isEmpty()) return null
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+    val safeMax = maxDimensionPx.coerceIn(96, 1024)
+    var sample = 1
+    while (bounds.outWidth / sample > safeMax * 2 || bounds.outHeight / sample > safeMax * 2) {
+        sample *= 2
+    }
+    return BitmapFactory.decodeByteArray(
+        bytes,
+        0,
+        bytes.size,
+        BitmapFactory.Options().apply {
+            inPreferredConfig = Bitmap.Config.RGB_565
+            inSampleSize = sample
+        }
+    )?.let { decoded ->
+        val longest = max(decoded.width, decoded.height)
+        if (longest <= safeMax) decoded else {
+            val scale = safeMax.toFloat() / longest.toFloat()
+            Bitmap.createScaledBitmap(
+                decoded,
+                (decoded.width * scale).roundToInt().coerceAtLeast(1),
+                (decoded.height * scale).roundToInt().coerceAtLeast(1),
+                true
+            ).also { scaled -> if (scaled !== decoded) decoded.recycle() }
+        }
     }
 }
 

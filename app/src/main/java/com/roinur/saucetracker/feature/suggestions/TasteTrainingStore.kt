@@ -19,7 +19,8 @@ internal data class TasteTrainingPrompt(
     val title: String,
     val rating: Int,
     val thumbnailUrl: String,
-    val drivers: List<TasteDriver>
+    val drivers: List<TasteDriver>,
+    val sourceKey: String = "nhentai:$code"
 )
 
 internal data class TasteTrainingFeedback(
@@ -28,12 +29,27 @@ internal data class TasteTrainingFeedback(
     val selectedDriverKeys: Set<String>,
     val notAboutMetadata: Boolean,
     val normallyLikeButNotThisEntry: Boolean,
-    val updatedAtMillis: Long
+    val updatedAtMillis: Long,
+    val sourceKey: String = "nhentai:$code",
+    val title: String = ""
 )
 
-internal class TasteTrainingStore(private val preferences: SharedPreferences) {
+internal class TasteTrainingStore private constructor(
+    private val readFeedback: () -> String,
+    private val writeFeedback: (String) -> Unit
+) {
+    constructor(preferences: SharedPreferences) : this(
+        { preferences.getString(KEY_TASTE_TRAINING_FEEDBACK, "").orEmpty() },
+        { preferences.edit().putString(KEY_TASTE_TRAINING_FEEDBACK, it).apply() }
+    )
+
+    companion object {
+        /** Evaluate another profile's saved feedback without activating or modifying it. */
+        fun fromSnapshot(raw: String): TasteTrainingStore = TasteTrainingStore({ raw }, { error("Read-only training snapshot") })
+    }
+
     fun load(): List<TasteTrainingFeedback> {
-        val raw = preferences.getString(KEY_TASTE_TRAINING_FEEDBACK, "").orEmpty()
+        val raw = readFeedback()
         val array = runCatching { JSONArray(raw) }.getOrNull() ?: return emptyList()
         return buildList {
             for (index in 0 until array.length()) {
@@ -59,20 +75,22 @@ internal class TasteTrainingStore(private val preferences: SharedPreferences) {
                         selectedDriverKeys = keys,
                         notAboutMetadata = row.optBoolean("not_about_metadata", false),
                         normallyLikeButNotThisEntry = row.optBoolean("normally_like_but_not_entry", false),
-                        updatedAtMillis = row.optLong("updated_at_ms", 0L).coerceAtLeast(0L)
+                        updatedAtMillis = row.optLong("updated_at_ms", 0L).coerceAtLeast(0L),
+                        sourceKey = row.optString("source_key").ifBlank { "nhentai:$code" },
+                        title = row.optString("title")
                     )
                 )
             }
-        }.distinctBy { it.code }.sortedByDescending { it.updatedAtMillis }
+        }.distinctBy { it.sourceKey }.sortedByDescending { it.updatedAtMillis }
     }
 
     fun save(feedback: TasteTrainingFeedback) {
-        val merged = (load().filterNot { it.code == feedback.code } + feedback)
+        val merged = (load().filterNot { it.sourceKey == feedback.sourceKey } + feedback)
             .sortedByDescending { it.updatedAtMillis }
         persist(merged)
     }
 
-    fun delete(code: Int) = persist(load().filterNot { it.code == code })
+    fun delete(code: Int, sourceKey: String? = null) = persist(load().filterNot { if (sourceKey != null) it.sourceKey == sourceKey else it.code == code })
 
     /**
      * A deliberately bounded complement to the existing inferred profile. Explicit feedback can
@@ -100,7 +118,7 @@ internal class TasteTrainingStore(private val preferences: SharedPreferences) {
         return raw.mapValues { (_, value) -> value * scale }
     }
 
-    fun revision(): Int = preferences.getString(KEY_TASTE_TRAINING_FEEDBACK, "").orEmpty().hashCode()
+    fun revision(): Int = readFeedback().hashCode()
 
     private fun persist(rows: List<TasteTrainingFeedback>) {
         val array = JSONArray()
@@ -108,6 +126,8 @@ internal class TasteTrainingStore(private val preferences: SharedPreferences) {
             array.put(
                 JSONObject()
                     .put("code", row.code)
+                    .put("source_key", row.sourceKey)
+                    .put("title", row.title)
                     .put("rating", row.rating)
                     .put("drivers", JSONArray(row.selectedDriverKeys.sorted()))
                     .put("not_about_metadata", row.notAboutMetadata)
@@ -115,8 +135,8 @@ internal class TasteTrainingStore(private val preferences: SharedPreferences) {
                     .put("updated_at_ms", row.updatedAtMillis)
             )
         }
-        preferences.edit().putString(KEY_TASTE_TRAINING_FEEDBACK, array.toString()).apply()
+        writeFeedback(array.toString())
     }
 }
 
-internal val TASTE_TRAINING_DRIVER_TYPES = setOf("tag", "artist", "group")
+internal val TASTE_TRAINING_DRIVER_TYPES = setOf("tag", "artist", "author", "group")

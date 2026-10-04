@@ -445,6 +445,13 @@ internal class BackupImporter {
         )
         val dailyReadActivity = payload.optJSONArray("daily_read_activity")
         val readingSessions = payload.optJSONArray("reading_sessions")
+        val sourcePlatform = payload.optJSONObject("source_platform")
+        require(!payload.has("source_platform") || sourcePlatform != null) { "Invalid source platform backup object." }
+        sourcePlatform?.let { SourcePlatformBackup.validate(it.toString()) }
+        BackupHistoryValidation.validateOwners(sourcePlatform?.toString(), listOf(
+            readingSessions?.toString(), subscriptions?.toString(),
+            subscriptionSeenCodes?.toString(), subscriptionEvents?.toString()
+        ))
         return ParsedImportPayload(
             entries = entries,
             creators = creators,
@@ -459,7 +466,8 @@ internal class BackupImporter {
             dailyReadActivity = dailyReadActivity,
             readingSessions = readingSessions,
             entryPinPriorityEnabled = entryPinPriorityEnabled,
-            portablePreferences = payload.optJSONObject(PortablePreferences.SNAPSHOT_KEY)
+            portablePreferences = payload.optJSONObject(PortablePreferences.SNAPSHOT_KEY),
+            sourcePlatform = sourcePlatform
         )
     }
 }

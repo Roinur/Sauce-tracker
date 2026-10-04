@@ -15,10 +15,11 @@ internal class HeatmapRepository(
 ) {
     private val cache = database.heatmapCacheDao
 
-    fun graphData(): TagGraphDataSnapshot = database.getTagGraphDataSnapshot()
-    fun trendTargets(kind: TrendTargetKind, includeMisc: Boolean): List<TrendTarget> =
-        database.listTrendTargets(kind, includeMisc)
-    fun trendSnapshot(request: TrendRequest): TrendSnapshot = database.getTrendSnapshot(request)
+    fun graphData(profileId: String, sourceScope: Set<String>): TagGraphDataSnapshot =
+        database.getTagGraphDataSnapshot(profileId, sourceScope)
+    fun trendTargets(kind: TrendTargetKind, includeMisc: Boolean, profileId: String, sourceScope: Set<String>): List<TrendTarget> =
+        database.listTrendTargets(kind, includeMisc, profileId, sourceScope)
+    fun trendSnapshot(request: TrendRequest, profileId: String, sourceScope: Set<String>): TrendSnapshot = database.getTrendSnapshot(request, profileId, sourceScope)
     fun cacheRecord(): EntryHeatmapCacheRecord? = cache.record()
     fun load(cacheKey: String, snapshot: TagGraphSnapshot): TagGraphEntryLayoutResult? =
         cache.load(cacheKey, snapshot)

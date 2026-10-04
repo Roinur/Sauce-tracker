@@ -218,7 +218,7 @@ internal fun LegacyCreatorsSection(
                                     modifier = Modifier.weight(0.18f),
                                     contentAlignment = Alignment.CenterEnd
                                 ) {
-                                    Icon(
+                                    if (vm.canSubscribeRoute(creator.type)) Icon(
                                         painter = painterResource(
                                             id = if (subscribed) {
                                                 R.drawable.ic_notifications_24

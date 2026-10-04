@@ -36,7 +36,9 @@ data class ExperimentalGalleryPhoto(
     val fileName: String,
     val uriString: String,
     val addedAtMillis: Long,
-    val pinnedAtMillis: Long = 0L
+    val pinnedAtMillis: Long = 0L,
+    val sourceId: String = "",
+    val remoteId: String = ""
 )
 
 data class ExperimentalGalleryContents(
@@ -55,6 +57,79 @@ data class ExperimentalGalleryImportResult(
     val movedCount: Int,
     val deleteFailureCount: Int
 )
+
+data class ExperimentalGalleryRemoteSaveResult(
+    val displayName: String,
+    val uri: Uri
+)
+
+suspend fun saveRemotePageToExperimentalGallery(
+    context: Context,
+    candidateUrls: List<String>,
+    displayName: String,
+    sourceId: String = "",
+    remoteId: String = ""
+): ExperimentalGalleryRemoteSaveResult {
+    val urls = candidateUrls.map(String::trim).filter(String::isNotBlank).distinct()
+    if (urls.isEmpty()) throw IOException("No full-quality page URL is available.")
+    val treeUriString = resolveEffectiveGalleryDownloadTreeUri(context)
+    if (treeUriString.isBlank()) throw IOException("Set a procedural backup folder or downloads folder first.")
+
+    val safeDisplayName = displayName.trim().ifBlank { "Slideshow page" }
+    val treeUri = Uri.parse(treeUriString)
+    val downloadsDir = resolveOrCreateGalleryDownloadsDirectory(context, treeUri)
+    val galleryDir = resolveOrCreateChildDirectory(context, downloadsDir, EXPERIMENTAL_GALLERY_DIR_NAME)
+    ensureNoMediaMarker(context, downloadsDir)
+    ensureNoMediaMarker(context, galleryDir)
+    val manifestEntries = readExperimentalGalleryManifestEntries(context, galleryDir).toMutableList()
+    val client = HttpClientFactory.create(HttpClientProfile.DOWNLOAD)
+    for (url in urls) {
+        val response = runCatching {
+            client.newCall(Request.Builder().url(url).get().build()).execute()
+        }.getOrNull() ?: continue
+        response.use {
+            val body = it.body
+            if (!it.isSuccessful || body == null) return@use
+            val urlExtension = url.substringBefore('?').substringAfterLast('.', "")
+            val mimeExtension = MimeTypeMap.getSingleton()
+                .getExtensionFromMimeType(body.contentType()?.toString().orEmpty()).orEmpty()
+            val extension = normalizeDownloadImageExtension(urlExtension)
+                .ifBlank { normalizeDownloadImageExtension(mimeExtension) }
+                .ifBlank { "jpg" }
+            val fileName = generateExperimentalGalleryFileName(
+                displayName = safeDisplayName,
+                extension = extension,
+                existingNames = manifestEntries.mapTo(hashSetOf()) { entry -> entry.fileName },
+                index = manifestEntries.size
+            )
+            val destination = resolveOrCreateChildFile(
+                context = context,
+                parent = galleryDir,
+                displayName = fileName,
+                mimeType = imageMimeTypeForExtension(extension)
+            )
+            val output = context.contentResolver.openOutputStream(destination, "w")
+                ?: context.contentResolver.openOutputStream(destination, "rwt")
+                ?: throw IOException("Could not write the page to Experimental Gallery.")
+            output.use { sink ->
+                body.byteStream().use { source -> source.copyTo(sink) }
+                sink.flush()
+            }
+            manifestEntries += ExperimentalGalleryManifestEntry(
+                id = fileName.substringBeforeLast('.'),
+                displayName = safeDisplayName,
+                fileName = fileName,
+                addedAtMillis = System.currentTimeMillis(),
+                pinnedAtMillis = 0L,
+                sourceId = sourceId,
+                remoteId = remoteId
+            )
+            writeExperimentalGalleryManifest(context, galleryDir, manifestEntries)
+            return ExperimentalGalleryRemoteSaveResult(safeDisplayName, destination)
+        }
+    }
+    throw IOException("Could not download the full-quality page.")
+}
 
 fun experimentalGalleryFolderLabel(context: Context): String {
     val base = effectiveGalleryDownloadFolderLabel(context)
@@ -84,7 +159,9 @@ fun loadExperimentalGalleryContents(
                 fileName = entry.fileName,
                 uriString = doc.documentUri.toString(),
                 addedAtMillis = entry.addedAtMillis,
-                pinnedAtMillis = entry.pinnedAtMillis
+                pinnedAtMillis = entry.pinnedAtMillis,
+                sourceId = entry.sourceId,
+                remoteId = entry.remoteId
             )
         }.sortedWith(
             compareByDescending<ExperimentalGalleryPhoto> { it.pinnedAtMillis > 0L }
@@ -297,7 +374,9 @@ private data class ExperimentalGalleryManifestEntry(
     val displayName: String,
     val fileName: String,
     val addedAtMillis: Long,
-    val pinnedAtMillis: Long
+    val pinnedAtMillis: Long,
+    val sourceId: String = "",
+    val remoteId: String = ""
 )
 
 private fun readExperimentalGalleryManifestEntries(
@@ -322,7 +401,9 @@ private fun readExperimentalGalleryManifestEntries(
                             displayName = obj.optString("display_name", "").trim().ifBlank { fileName },
                             fileName = fileName,
                             addedAtMillis = obj.optLong("added_at_ms", 0L).coerceAtLeast(0L),
-                            pinnedAtMillis = obj.optLong("pinned_at_ms", 0L).coerceAtLeast(0L)
+                            pinnedAtMillis = obj.optLong("pinned_at_ms", 0L).coerceAtLeast(0L),
+                            sourceId = obj.optString("source_id", "").trim(),
+                            remoteId = obj.optString("remote_id", "").trim()
                         )
                     )
                 }
@@ -371,6 +452,8 @@ private fun writeExperimentalGalleryManifest(
                             .put("file_name", entry.fileName)
                             .put("added_at_ms", entry.addedAtMillis)
                             .put("pinned_at_ms", entry.pinnedAtMillis)
+                            .put("source_id", entry.sourceId)
+                            .put("remote_id", entry.remoteId)
                     )
                 }
             }

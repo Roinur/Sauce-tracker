@@ -3,6 +3,21 @@ package com.roinur.saucetracker.feature.browser
 import com.roinur.saucetracker.*
 import com.roinur.saucetracker.data.backup.*
 import com.roinur.saucetracker.data.remote.GalleryUrls
+import com.roinur.saucetracker.data.source.SourceAdapter
+import com.roinur.saucetracker.data.source.SourceCapability
+import com.roinur.saucetracker.data.source.SourceEntry
+import com.roinur.saucetracker.data.source.SourceId
+import com.roinur.saucetracker.data.source.SourceQuery
+import com.roinur.saucetracker.data.source.SourceQueryField
+import com.roinur.saucetracker.data.source.SourceQueryParser
+import com.roinur.saucetracker.data.source.SourceQueryTerm
+import com.roinur.saucetracker.data.source.SourceSortMode
+import com.roinur.saucetracker.data.source.SourceRegistry
+import com.roinur.saucetracker.data.source.SourceChapterCacheStore
+import com.roinur.saucetracker.data.source.mangaDexAvailableLanguages
+import com.roinur.saucetracker.data.source.mangaDexLanguage
+import com.roinur.saucetracker.data.database.SauceTrackerDatabase
+import android.app.Application
 import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -173,10 +188,49 @@ import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.abs
 import kotlin.math.min
-internal class BrowserViewModel : androidx.lifecycle.ViewModel() {
+internal enum class MangaDexAgeRatingMode(
+    val label: String,
+    val description: String,
+    val queryValue: String
+) {
+    SAFE("SFW", "Only MangaDex titles rated safe.", "safe"),
+    SUGGESTIVE("Suggestive", "Safe and suggestive MangaDex titles.", "suggestive"),
+    ADULT("NSFW", "Include all MangaDex content ratings.", "adult")
+}
+
+internal class BrowserViewModel(application: Application) : androidx.lifecycle.AndroidViewModel(application) {
     private val client: OkHttpClient = HttpClientFactory.create(HttpClientProfile.BROWSER)
     private val commentsByCode = ConcurrentHashMap<Int, List<BrowserGalleryComment>>()
     private val relatedByCode = ConcurrentHashMap<Int, List<BrowserGallerySummary>>()
+    private val sourceRegistry = SourceRegistry.createDefault()
+    private val database = SauceTrackerDatabase(application)
+    private val chapterCache = SourceChapterCacheStore(database)
+    private val remoteIdByBrowserCode = ConcurrentHashMap<Int, String>()
+    @Volatile private var activeSourceId: SourceId = SourceId("nhentai")
+    @Volatile private var mangaDexAgeRatingMode: MangaDexAgeRatingMode = MangaDexAgeRatingMode.ADULT
+
+    fun configureSource(sourceId: String) {
+        activeSourceId = runCatching { SourceId(sourceId) }.getOrDefault(SourceId("nhentai"))
+    }
+
+    fun configureMangaDexAgeRating(mode: MangaDexAgeRatingMode) {
+        mangaDexAgeRatingMode = mode
+    }
+
+    fun supports(capability: SourceCapability): Boolean =
+        sourceRegistry.requireAdapter(activeSourceId).supports(capability)
+
+    fun browserCodeForRemoteId(remoteId: String): Int {
+        if (activeSourceId.value == "nhentai") return remoteId.toIntOrNull()?.takeIf { it > 0 } ?: 0
+        var candidate = (remoteId.hashCode() and Int.MAX_VALUE).coerceAtLeast(1)
+        while (true) {
+            val existing = remoteIdByBrowserCode.putIfAbsent(candidate, remoteId)
+            if (existing == null || existing == remoteId) return candidate
+            candidate = if (candidate == Int.MAX_VALUE) 1 else candidate + 1
+        }
+    }
+
+    private fun activeAdapter(): SourceAdapter = sourceRegistry.requireAdapter(activeSourceId)
 
     fun clearSession() {
         runCatching { client.dispatcher.cancelAll() }
@@ -187,10 +241,45 @@ internal class BrowserViewModel : androidx.lifecycle.ViewModel() {
 
     override fun onCleared() {
         clearSession()
+        database.close()
+        super.onCleared()
     }
 
     fun searchGalleries(query: String, page: Int, sortMode: BrowserSearchSortMode): BrowserSearchPage {
         val safePage = page.coerceAtLeast(1)
+        if (activeSourceId.value != "nhentai") {
+            val limit = 20
+            val parsed = SourceQueryParser.parse(query).let { base ->
+                base.copy(
+                    terms = base.terms + SourceQueryTerm(
+                        SourceQueryField.CATEGORY,
+                        mangaDexAgeRatingMode.queryValue
+                    )
+                )
+            }
+            if (safePage == 1 && query.isBlank() && sortMode == BrowserSearchSortMode.RECENT && activeAdapter().supports(SourceCapability.POPULAR_SORT)) {
+                // The two landing sections are independent. Serial requests made the first
+                // MangaDex paint wait for two full API round trips.
+                val adapter = activeAdapter()
+                val popularFuture = java.util.concurrent.CompletableFuture.supplyAsync {
+                    adapter.search(parsed.copy(sort = SourceSortMode.POPULAR), offset = 0, limit = 5)
+                }
+                val recentFuture = java.util.concurrent.CompletableFuture.supplyAsync {
+                    adapter.search(parsed.copy(sort = SourceSortMode.RECENT), offset = 0, limit = limit)
+                }
+                val popular = popularFuture.get()
+                val recent = recentFuture.get()
+                val combined = (popular.entries + recent.entries).distinctBy { it.key }.take(limit)
+                return BrowserSearchPage(combined.map(::toBrowserSummary), safePage, recent.hasMore)
+                    .also(::saveMangaDexLandingPage)
+            }
+            val result = activeAdapter().search(
+                query = parsed.copy(sort = if (sortMode == BrowserSearchSortMode.RECENT) SourceSortMode.RECENT else SourceSortMode.POPULAR),
+                offset = (safePage - 1) * limit,
+                limit = limit
+            )
+            return BrowserSearchPage(result.entries.map(::toBrowserSummary), safePage, result.hasMore)
+        }
         val trimmed = query.trim()
         val url = if (trimmed.isBlank()) {
             val sortValue = sortMode.searchSortValue.trim()
@@ -229,6 +318,23 @@ internal class BrowserViewModel : androidx.lifecycle.ViewModel() {
         sortMode: BrowserSearchSortMode
     ): BrowserSearchPage {
         val safePage = page.coerceAtLeast(1)
+        if (activeSourceId.value != "nhentai") {
+            val field = when (normalizeBrowserRouteType(creatorType)) {
+                "artist" -> SourceQueryField.ARTIST
+                "group" -> SourceQueryField.GROUP
+                else -> SourceQueryField.AUTHOR
+            }
+            val limit = 20
+            val result = activeAdapter().search(
+                SourceQuery(
+                    terms = listOf(SourceQueryTerm(field, creatorSlug)),
+                    sort = if (sortMode == BrowserSearchSortMode.RECENT) SourceSortMode.RECENT else SourceSortMode.POPULAR
+                ),
+                offset = (safePage - 1) * limit,
+                limit = limit
+            )
+            return BrowserSearchPage(result.entries.map(::toBrowserSummary), safePage, result.hasMore)
+        }
         val normalizedType = normalizeBrowserRouteType(creatorType)
         if (normalizedType.isBlank()) {
             return BrowserSearchPage(results = emptyList(), page = safePage, hasMore = false)
@@ -264,6 +370,10 @@ internal class BrowserViewModel : androidx.lifecycle.ViewModel() {
 
     fun fetchGalleryDetail(code: Int): BrowserGalleryDetail {
         if (code <= 0) throw IOException("Invalid code.")
+        if (activeSourceId.value != "nhentai") {
+            val remoteId = remoteIdByBrowserCode[code] ?: throw IOException("Unknown remote entry.")
+            return toBrowserDetail(activeAdapter().fetchEntry(remoteId))
+        }
         val apiDetail = runCatching {
             val url = "https://nhentai.net/api/gallery/$code"
             val body = requestBody(url)
@@ -286,8 +396,79 @@ internal class BrowserViewModel : androidx.lifecycle.ViewModel() {
         throw (apiDetail.exceptionOrNull() ?: IOException("Could not parse gallery metadata."))
     }
 
+    fun cachedMangaDexLandingPage(
+        query: String,
+        page: Int,
+        sortMode: BrowserSearchSortMode
+    ): BrowserSearchPage? {
+        if (activeSourceId.value != "mangadex" || query.isNotBlank() || page != 1 || sortMode != BrowserSearchSortMode.RECENT) {
+            return null
+        }
+        val file = mangaDexLandingCacheFile()
+        if (!file.isFile || System.currentTimeMillis() - file.lastModified() > MANGADEX_LANDING_CACHE_MAX_AGE_MS) return null
+        return runCatching {
+            val root = JSONObject(file.readText())
+            val rows = root.optJSONArray("results") ?: JSONArray()
+            val results = buildList {
+                for (index in 0 until rows.length()) {
+                    val row = rows.optJSONObject(index) ?: continue
+                    val remoteId = row.optString("remote_id", "").trim()
+                    if (remoteId.isBlank()) continue
+                    val summary = BrowserGallerySummary(
+                        code = browserCodeForRemoteId(remoteId),
+                        title = row.optString("title", ""),
+                        subtitle = row.optString("subtitle", ""),
+                        mediaId = 0L,
+                        coverExt = "",
+                        numPages = row.optInt("unit_count", 0),
+                        uploadDate = row.optString("upload_date", ""),
+                        sourceId = "mangadex",
+                        remoteId = remoteId,
+                        canonicalUrl = row.optString("canonical_url", ""),
+                        thumbnailUrl = row.optString("thumbnail_url", ""),
+                        unitLabel = row.optString("unit_label", "chapters")
+                    )
+                    add(summary)
+                }
+            }
+            BrowserSearchPage(results, 1, root.optBoolean("has_more", true))
+        }.getOrNull()?.takeIf { it.results.isNotEmpty() }
+    }
+
+    private fun saveMangaDexLandingPage(page: BrowserSearchPage) {
+        runCatching {
+            val root = JSONObject()
+                .put("saved_at", System.currentTimeMillis())
+                .put("has_more", page.hasMore)
+                .put("results", JSONArray().apply {
+                    page.results.forEach { row ->
+                        put(JSONObject()
+                            .put("remote_id", row.remoteId)
+                            .put("title", row.title)
+                            .put("subtitle", row.subtitle)
+                            .put("unit_count", row.numPages)
+                            .put("upload_date", row.uploadDate)
+                            .put("canonical_url", row.canonicalUrl)
+                            .put("thumbnail_url", row.thumbnailUrl)
+                            .put("unit_label", row.unitLabel)
+                        )
+                    }
+                })
+            mangaDexLandingCacheFile().writeText(root.toString())
+        }
+    }
+
+    private fun mangaDexLandingCacheFile() = getApplication<Application>().cacheDir.resolve(
+        "mangadex-browser-landing-v1-${mangaDexAgeRatingMode.name.lowercase(Locale.US)}.json"
+    )
+
+    private companion object {
+        const val MANGADEX_LANDING_CACHE_MAX_AGE_MS = 6L * 60L * 60L * 1000L
+    }
+
     fun fetchGalleryComments(code: Int): List<BrowserGalleryComment> {
         if (code <= 0) return emptyList()
+        if (!supports(SourceCapability.COMMENTS)) return emptyList()
         commentsByCode[code]?.let { return it }
         val apiComments = runCatching {
             requestBody(GalleryUrls.comments(code))
@@ -303,6 +484,7 @@ internal class BrowserViewModel : androidx.lifecycle.ViewModel() {
 
     fun fetchRelatedGalleries(code: Int): List<BrowserGallerySummary> {
         if (code <= 0) return emptyList()
+        if (activeSourceId.value != "nhentai") return emptyList()
         relatedByCode[code]?.let { return it }
         val payload = sequenceOf(
             GalleryUrls.relatedV2(code),
@@ -313,6 +495,75 @@ internal class BrowserViewModel : androidx.lifecycle.ViewModel() {
             .filterNot { it.code == code }
             .take(5)
             .also { relatedByCode[code] = it }
+    }
+
+    fun fetchReaderContent(remoteId: String, chapterId: String? = null) =
+        activeAdapter().fetchReaderContent(remoteId, chapterId)
+
+    fun fetchAllChapters(remoteId: String): List<com.roinur.saucetracker.data.source.SourceChapter> {
+        val adapter = activeAdapter()
+        chapterCache.fresh(activeSourceId.value, remoteId)?.let { return it.chapters }
+        val stale = chapterCache.load(activeSourceId.value, remoteId)
+        return runCatching {
+            val chapters = mutableListOf<com.roinur.saucetracker.data.source.SourceChapter>()
+            var offset = 0
+            repeat(100) {
+                val page = adapter.fetchChapters(remoteId, offset = offset, limit = 100)
+                chapters += page.chapters
+                if (!page.hasMore || page.chapters.isEmpty()) {
+                    return@runCatching chapters.distinctBy { it.id }
+                }
+                offset += page.chapters.size
+            }
+            chapters.distinctBy { it.id }
+        }.onSuccess { chapters ->
+            chapterCache.save(activeSourceId.value, remoteId, chapters)
+        }.getOrElse { error ->
+            stale?.chapters ?: throw error
+        }
+    }
+
+    private fun toBrowserSummary(entry: SourceEntry): BrowserGallerySummary {
+        val browserCode = browserCodeForRemoteId(entry.key.remoteId)
+        return BrowserGallerySummary(
+            code = browserCode,
+            title = entry.title,
+            subtitle = entry.creators.joinToString(" · ") { it.name }.ifBlank {
+                entry.alternateTitles.firstOrNull().orEmpty()
+            },
+            mediaId = 0L,
+            coverExt = "jpg",
+            numPages = entry.unitCount,
+            uploadDate = entry.publishedAt,
+            sourceId = entry.key.sourceId.value,
+            remoteId = entry.key.remoteId,
+            canonicalUrl = entry.canonicalUrl,
+            thumbnailUrl = entry.thumbnailUrl,
+            unitLabel = entry.unitLabel,
+            sourceEntry = entry
+        )
+    }
+
+    private fun toBrowserDetail(entry: SourceEntry): BrowserGalleryDetail {
+        val tags = linkedMapOf<String, MutableList<String>>()
+        entry.tags.forEach { tag -> tags.getOrPut(tag.type.ifBlank { "tag" }) { mutableListOf() }.add(tag.name) }
+        entry.creators.forEach { creator -> tags.getOrPut(creator.type.ifBlank { "author" }) { mutableListOf() }.add(creator.name) }
+        // The entry pane is useful as soon as its metadata arrives. Chapter pagination is loaded
+        // independently by BrowserScreen so a large series cannot hold the whole pane hostage.
+        val chapters = emptyList<com.roinur.saucetracker.data.source.SourceChapter>()
+        val summary = toBrowserSummary(entry)
+        return BrowserGalleryDetail(
+            summary = summary,
+            tagsByType = tags.mapValues { (_, names) -> names.distinct() },
+            tagCountsByKey = emptyMap(),
+            pageThumbs = emptyList(),
+            comments = emptyList(),
+            relatedGalleries = emptyList(),
+            readerContent = null,
+            chapters = chapters,
+            availableLanguages = entry.mangaDexAvailableLanguages(),
+            selectedLanguage = mangaDexLanguage(entry.key.remoteId)
+        )
     }
 
     private fun requestBody(url: String): String {
