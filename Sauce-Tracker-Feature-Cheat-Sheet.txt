@@ -78,6 +78,11 @@ feature area rather than by release and is not a development changelog.
 - Layout measurements adapt to short, tall, narrow and wide phone screens.
 - Loading, refresh and error states are shown in context instead of replacing valid
   content unnecessarily.
+- Returning from Browser or saved screenshots retains unchanged library state.
+  Cheap SQLite change tokens still detect real Reader/Browser/Bridge/background writes.
+- Local navigation reuses loaded profile state and linear entry-key lookup; ordinary
+  screen opens do not repeat compatibility schema work or eagerly open MangaDex's
+  chapter cache for NHentai. Automatic backup captures only changed profile preferences.
 
 
 2. SEARCH EVERYTHING AND IMPORT ROUTING

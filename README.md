@@ -36,12 +36,16 @@ reading surface, not merely a remote-control page.
 | **Desktop Bridge rebuilt** | Dashboard, paginated library, internal Browser/Reader, History, Trends, Heatmaps, suggestions and phone-synchronized Material You accents. |
 | **Sharing and captures** | QR packages of 1–10 entries, raw-page capture from the reader and Library's entry-filtered Saved: Screenshots gallery. |
 | **Intelligence connected** | MangaDex data participates in existing recommendations, training, presets, trends, heatmaps and meaningful day/series History. |
-| **Performance and polish** | Shared thumbnail/network pipelines, cached chapter metadata, bounded reader prefetch, new accent-aware icons and optional Extra dark. |
+| **Performance and polish** | Change-aware navigation without rebuilding unchanged libraries, shared thumbnail/network pipelines, cached chapter metadata, bounded reader prefetch, new accent-aware icons and optional Extra dark. |
 | **Safer data** | Validated transactional 1.9 migration, V2 profile/source backups, V1 compatibility, isolated Verified Restore and healthy preserved browser-only history. |
 
 This summary is only the overview. The [complete 2.0 release tour](docs/releases/2.0.md)
 covers the full feature list, interaction changes, performance work, compatibility
 and limitations. [CHANGELOG.md](CHANGELOG.md) records the implementation-level history.
+
+The refreshed 2.0 APK includes the local-navigation maintenance update: unchanged
+library state is retained on return from Browser and saved screenshots, while real
+database changes still trigger refresh. See the [maintenance verification](docs/QA_2.0_NAVIGATION_2026-10-04.md).
 
 > [!IMPORTANT]
 > A fresh install or 1.9 upgrade creates **NHentai** and **MangaDex** source-locked

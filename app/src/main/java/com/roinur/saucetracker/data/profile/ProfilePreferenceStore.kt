@@ -2,6 +2,7 @@ package com.roinur.saucetracker.data.profile
 
 import android.content.ContentValues
 import android.content.SharedPreferences
+import android.database.sqlite.SQLiteDatabase
 import com.roinur.saucetracker.data.database.SauceTrackerDatabase
 import org.json.JSONArray
 import org.json.JSONObject
@@ -15,15 +16,23 @@ internal class ProfilePreferenceStore(private val database: SauceTrackerDatabase
     }
 
     fun capture(profileId: String, preferences: SharedPreferences) {
-        val scoped = preferences.all.filterKeys(::isProfileKey)
+        val scoped = preferences.all.filterKeys(::isProfileKey).mapValues { (_, value) -> encode(value) }
         val db = database.writableDatabase
         db.beginTransaction()
         try {
-            db.delete("profile_preferences", "profile_id=?", arrayOf(profileId))
-            scoped.forEach { (key, value) ->
-                db.insertOrThrow("profile_preferences", null, ContentValues().apply {
-                    put("profile_id", profileId); put("preference_key", key); put("value_json", encode(value)); put("updated_at", Instant.now().toString())
-                })
+            val previous = db.rawQuery("SELECT preference_key,value_json FROM profile_preferences WHERE profile_id=?", arrayOf(profileId)).use { cursor ->
+                buildMap { while (cursor.moveToNext()) put(cursor.getString(0), cursor.getString(1)) }
+            }
+            // Automatic backups capture these too. Replacing identical rows on every stop
+            // needlessly wrote to SQLite and made a read-only gallery visit look like a mutation.
+            val changes = profilePreferenceChanges(previous, scoped)
+            changes.removed.forEach { key ->
+                db.delete("profile_preferences", "profile_id=? AND preference_key=?", arrayOf(profileId, key))
+            }
+            changes.upserts.forEach { (key, value) ->
+                db.insertWithOnConflict("profile_preferences", null, ContentValues().apply {
+                    put("profile_id", profileId); put("preference_key", key); put("value_json", value); put("updated_at", Instant.now().toString())
+                }, SQLiteDatabase.CONFLICT_REPLACE).also { check(it != -1L) { "Could not capture profile preference." } }
             }
             db.setTransactionSuccessful()
         } finally { db.endTransaction() }

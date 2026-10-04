@@ -2,6 +2,12 @@
 
 All notable Sauce Tracker release changes are documented here.
 
+## 2.0 maintenance - 2026-10-04
+
+- Reduced local navigation work: retain unchanged dashboard data on return, detect Reader/Browser/Bridge writes without scanning the library, use linear tag/creator visibility lookup, reuse fetched profile state and defer the chapter-cache database until needed.
+- Run compatibility schema repairs once per live database/version per process instead of on every screen's database open; real upgrades, failed-repair retries and isolated restore checks remain intact.
+- Automatic backup preference capture writes only actual changes, preserving unchanged values/timestamps and avoiding false library invalidation after a read-only gallery visit.
+
 ## 2.0.0 - 2026-10-04
 
 Sauce Tracker's largest platform update so far: first-class NHentai and MangaDex,

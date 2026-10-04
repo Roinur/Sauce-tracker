@@ -4,6 +4,8 @@ import com.roinur.saucetracker.*
 import com.roinur.saucetracker.core.ui.theme.AccentMode
 import com.roinur.saucetracker.core.media.*
 import com.roinur.saucetracker.core.change.LibraryChange
+import com.roinur.saucetracker.core.change.NavigationRefreshGate
+import com.roinur.saucetracker.core.change.visibleEntryKeys
 import com.roinur.saucetracker.core.change.LibraryChangeAccumulator
 import com.roinur.saucetracker.core.change.LibraryChangeBatch
 import com.roinur.saucetracker.core.change.LibraryChangeImpact
@@ -504,6 +506,8 @@ class DashboardViewModel(
     private val backupImporter = BackupImporter()
     private val suggestionsViewModel = SuggestionsViewModel()
     private val db = SauceTrackerDatabase(application)
+    private val navigationRefreshGate = NavigationRefreshGate()
+    private var navigationRefreshJob: Job? = null
     private val sourceChapterCache = SourceChapterCacheStore(db)
     private val profileStore = ProfileStore(db)
     private val sourceEntryStore = SourceEntryStore(db)
@@ -1053,6 +1057,7 @@ class DashboardViewModel(
         viewModelScope.launch {
             maybeAutoRefreshSubscriptions()
         }
+        navigationRefreshGate.remember(runCatching { db.navigationChangeToken() }.getOrNull())
     }
 
     fun updateUnifiedInput(value: String) {
@@ -2545,6 +2550,9 @@ class DashboardViewModel(
     }
 
     fun onHostStopped() {
+        navigationRefreshJob?.cancel()
+        navigationRefreshJob = null
+        navigationRefreshGate.remember(runCatching { db.navigationChangeToken() }.getOrNull())
         triggerProceduralBackup(ignoreThrottle = false, reportStatus = false)
         scheduleAppLockAfterClose()
     }
@@ -2575,7 +2583,17 @@ class DashboardViewModel(
         refreshAppLockOnResume()
         consumePendingShareTextIfUnlocked()
         consumePendingShareImageIfUnlocked()
-        refreshAll(selectedCode)
+        navigationRefreshJob?.cancel()
+        navigationRefreshJob = viewModelScope.launch {
+            val token = withContext(Dispatchers.IO) {
+                runCatching { db.navigationChangeToken() }.getOrNull()
+            }
+            if (navigationRefreshGate.needsRefresh(token)) {
+                refreshAll(selectedCode)
+                reloadSubscriptionsState()
+            }
+            navigationRefreshGate.remember(token)
+        }
         if (!awaitingBrowserRatingPrompt) return
         if (browserRatingPromptState != null) return
         val code = pendingBrowserRatingCode ?: run {
@@ -7592,13 +7610,11 @@ class DashboardViewModel(
             }
         }
         sourceLibraryEntries = allSourceRows
-        val profileStates = if (SourceId("nhentai") in effectiveSourceScope()) sourceEntryStore.statesForSource(activeProfileId, SourceId("nhentai")) else emptyMap()
-        val allowedNhentaiCodes = allSourceRows.asSequence()
+        // These states were already loaded with the source rows; do not query them a second time.
+        val profileStates = allSourceRows.asSequence()
             .filter { it.entry.key.sourceId.value == "nhentai" }
-            .mapNotNull { it.entry.key.remoteId.toIntOrNull() }
-            .toSet()
+            .associate { it.entry.key.remoteId to it.state }
         val nhentaiEntries = rawEntries.mapNotNull { row ->
-            if (row.code !in allowedNhentaiCodes) return@mapNotNull null
             val state = profileStates[row.code.toString()] ?: return@mapNotNull null
             row.copy(rating = state.rating, averageRating = state.rating.toFloat(), isRead = state.isRead, pinned = state.pinned, addedAt = state.addedAt, fetchedAt = state.fetchedAt)
         }
@@ -8486,7 +8502,8 @@ class DashboardViewModel(
     }
 
     private fun visibleSourceRows(): List<ProfileSourceEntry> {
-        val visibleKeys = currentUiCodesBySourceKey().filterValues { code -> entries.any { it.code == code } }.keys
+        val keysByCode = currentUiCodesBySourceKey().entries.associate { (key, code) -> code to key }
+        val visibleKeys = visibleEntryKeys(entries.map { it.code }, keysByCode)
         return sourceLibraryEntries.filter { it.entry.key in visibleKeys }
     }
 
@@ -8579,6 +8596,7 @@ class DashboardViewModel(
 
     override fun onCleared() {
         super.onCleared()
+        navigationRefreshJob?.cancel()
         libraryChangeFlushJob?.cancel()
         seriesNeighborsJob?.cancel()
         selectedEntryRelatedJob?.cancel()

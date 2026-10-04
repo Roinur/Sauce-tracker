@@ -203,8 +203,10 @@ internal class BrowserViewModel(application: Application) : androidx.lifecycle.A
     private val commentsByCode = ConcurrentHashMap<Int, List<BrowserGalleryComment>>()
     private val relatedByCode = ConcurrentHashMap<Int, List<BrowserGallerySummary>>()
     private val sourceRegistry = SourceRegistry.createDefault()
-    private val database = SauceTrackerDatabase(application)
-    private val chapterCache = SourceChapterCacheStore(database)
+    // NHentai has no chapter cache. Initialize on the chapter-loading IO path, not first composition.
+    private val databaseDelegate = lazy { SauceTrackerDatabase(application) }
+    private val database by databaseDelegate
+    private val chapterCache by lazy { SourceChapterCacheStore(database) }
     private val remoteIdByBrowserCode = ConcurrentHashMap<Int, String>()
     @Volatile private var activeSourceId: SourceId = SourceId("nhentai")
     @Volatile private var mangaDexAgeRatingMode: MangaDexAgeRatingMode = MangaDexAgeRatingMode.ADULT
@@ -241,7 +243,7 @@ internal class BrowserViewModel(application: Application) : androidx.lifecycle.A
 
     override fun onCleared() {
         clearSession()
-        database.close()
+        if (databaseDelegate.isInitialized()) database.close()
         super.onCleared()
     }
 

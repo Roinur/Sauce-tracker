@@ -9,6 +9,7 @@ const checks = [
   ['tools/source-backup-test.cjs'],
   ['tools/backup-health-test.cjs'],
   ['tools/profile-progress-test.cjs'],
+  ['tools/navigation-refresh-test.cjs'],
   ['tools/github-media-copy-test.cjs'],
   ['tools/bridge-data-test.cjs'],
   ['tools/bridge-library-test.cjs'],

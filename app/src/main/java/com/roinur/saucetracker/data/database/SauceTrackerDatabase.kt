@@ -7,6 +7,7 @@ import com.roinur.saucetracker.data.backup.RestoreProfileRouting
 import com.roinur.saucetracker.core.media.*
 import com.roinur.saucetracker.core.diagnostics.GitHubMediaSession
 import com.roinur.saucetracker.core.time.UserCalendar
+import com.roinur.saucetracker.core.change.DatabaseChangeToken
 
 import android.content.ContentValues
 import android.content.Context
@@ -98,10 +99,38 @@ class SauceTrackerDatabase(
         "subscription_events", "daily_read_activity", "reading_sessions", "popular_tags", "entry_heatmap_cache"
     )
     init {
-        migrateSchema(writableDatabase)
-        if (databaseNameOverride == null) {
-            GitHubMediaSession.populateFromProductionIfNeeded(appContext, writableDatabase)
+        val openedDatabase = writableDatabase
+        if (databaseNameOverride != null) {
+            // Restore/verification databases are independent, potentially recreated at the same path.
+            migrateSchema(openedDatabase)
+        } else {
+            schemaInitialization.ensure(openedDatabase.path, openedDatabase.version) {
+                migrateSchema(openedDatabase)
+            }
         }
+        if (databaseNameOverride == null) {
+            GitHubMediaSession.populateFromProductionIfNeeded(appContext, openedDatabase)
+        }
+    }
+
+    internal fun navigationChangeToken(): DatabaseChangeToken {
+        // This helper does not enable WAL: reads/writes share its single SQLite connection.
+        // data_version detects other helpers (Browser/Reader/Bridge/Worker); total_changes
+        // also catches writes from background work using this helper. No library scan needed.
+        val database = readableDatabase
+        val externalVersion = database.rawQuery("PRAGMA data_version", null).use {
+            check(it.moveToFirst())
+            it.getLong(0)
+        }
+        val localChanges = database.rawQuery("SELECT total_changes()", null).use {
+            check(it.moveToFirst())
+            it.getLong(0)
+        }
+        return DatabaseChangeToken(externalVersion, localChanges)
+    }
+
+    private companion object {
+        val schemaInitialization = SchemaInitializationGate()
     }
 
     override fun onConfigure(db: SQLiteDatabase) {
@@ -110,6 +139,7 @@ class SauceTrackerDatabase(
     }
 
     override fun onCreate(db: SQLiteDatabase) {
+        schemaInitialization.invalidate(db.path)
         db.execSQL(
             """
             CREATE TABLE IF NOT EXISTS entries (
@@ -268,6 +298,7 @@ class SauceTrackerDatabase(
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        schemaInitialization.invalidate(db.path)
         if (oldVersion < 2 && newVersion >= 2) {
             createAndValidatePreMigrationSnapshot(db, oldVersion)
             ensureV2Schema(db)
